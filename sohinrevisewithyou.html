@@ -90,8 +90,8 @@
  * ============================================================================ */
 
 const CONFIG = {
-  GOOGLE_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbyK-O06xTn9urYLk4Pwnqp-efx_MfXhZKrDq2JwTegOztedMm6_rSvbqXsuo8jvsh8T/exec",
-  QUESTION_API_URL: "https://script.google.com/macros/s/AKfycbykunoXUXnsCsjqzvHHsOGs4sG-B74Ia5Qz4eip-cNkfkilxZago15Vpe7u_LODtfqBEg/exec",
+  GOOGLE_SCRIPT_URL: "https://sohinrevisewithyou.sohinrick.workers.dev/api/users",
+  QUESTION_API_URL: "https://sohinrevisewithyou.sohinrick.workers.dev/api/questions",
   GOOGLE_CLIENT_ID: "958495587537-sm7jsicn5e8j3bbvj1m49j5c0681k6p5.apps.googleusercontent.com",
   ALLOWED_EMAIL_DOMAIN: "@tcss.edu.hk",
   QUESTIONS_PER_SESSION: 20,
@@ -2797,7 +2797,9 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
         records: [],
         totalCorrect: 0,
         totalAttempted: 0,
-        attempts: 0
+        attempts: 0,
+        lastPracticeDate: null,
+        weeklyAttempts: 0
       });
     });
 
@@ -2819,7 +2821,9 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
           records: [],
           totalCorrect: 0,
           totalAttempted: 0,
-          attempts: 0
+          attempts: 0,
+          lastPracticeDate: null,
+          weeklyAttempts: 0
         });
       }
       const s = map.get(key);
@@ -2830,6 +2834,27 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
       s.totalCorrect += st.score;
       s.totalAttempted += st.total;
       s.attempts += 1;
+
+      // 計算最後練習日期 & 本週練習次數
+      const rawRecordDate = String(r[7] || '').trim();
+      let recDateStr = rawRecordDate ? safeDateStr(rawRecordDate) : null;
+      if (!recDateStr && r[0]) {
+        try { recDateStr = getHKDateString(new Date(r[0])); } catch(e) {}
+      }
+      if (recDateStr) {
+        if (!s.lastPracticeDate || recDateStr > s.lastPracticeDate) {
+          s.lastPracticeDate = recDateStr;
+        }
+        const todayForWeek = getHKDateString();
+        const [ty2, tm2, td2] = todayForWeek.split('-').map(Number);
+        const [ry, rm, rd] = recDateStr.split('-').map(Number);
+        if (ry) {
+          const diffDaysRec = Math.round(
+            (new Date(ty2, tm2-1, td2) - new Date(ry, rm-1, rd)) / 86400000
+          );
+          if (diffDaysRec >= 0 && diffDaysRec < 7) s.weeklyAttempts += 1;
+        }
+      }
     });
 
     return Array.from(map.values()).map(s => {
@@ -3139,11 +3164,36 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
                     </td>
                     <td className="py-2 px-2 text-right">
                       {s.attempts === 0 ? (
-                        <span className="text-xs bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 px-2 py-0.5 rounded">未開始</span>
-                      ) : s.attempts < 3 ? (
-                        <span className="text-xs bg-yellow-100 dark:bg-yellow-900/50 text-yellow-700 dark:text-yellow-300 px-2 py-0.5 rounded">進度落後</span>
+                        <span className="text-xs bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 px-2 py-0.5 rounded-full">未開始</span>
                       ) : (
-                        <span className="text-xs bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300 px-2 py-0.5 rounded">活躍</span>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                            s.weeklyAttempts >= 3
+                              ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                              : s.weeklyAttempts >= 1
+                              ? 'bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-300'
+                              : 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400'
+                          }`}>
+                            <i className="fas fa-repeat mr-1 text-[10px]"></i>
+                            {s.weeklyAttempts > 0 ? `本週 ${s.weeklyAttempts} 次` : '本週未練習'}
+                          </span>
+                          <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                            {s.lastPracticeDate ? (() => {
+                              const todayStr = getHKDateString();
+                              const [ty, tm, td] = todayStr.split('-').map(Number);
+                              const [ly, lm, ld] = s.lastPracticeDate.split('-').map(Number);
+                              if (!ly) return '—';
+                              const diff = Math.round(
+                                (new Date(ty,tm-1,td) - new Date(ly,lm-1,ld)) / 86400000
+                              );
+                              if (diff === 0) return '今天練習';
+                              if (diff === 1) return '昨天練習';
+                              if (diff < 7) return `${diff} 天前`;
+                              if (diff < 30) return `${Math.floor(diff/7)} 週前`;
+                              return `${Math.floor(diff/30)} 個月前`;
+                            })() : '—'}
+                          </span>
+                        </div>
                       )}
                     </td>
                   </tr>
