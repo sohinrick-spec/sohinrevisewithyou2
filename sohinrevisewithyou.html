@@ -90,8 +90,8 @@
  * ============================================================================ */
 
 const CONFIG = {
-  GOOGLE_SCRIPT_URL: "https://sohinrevisewithyou.sohinrick.workers.dev/api/users",
-  QUESTION_API_URL: "https://sohinrevisewithyou.sohinrick.workers.dev/api/questions",
+  GOOGLE_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbyK-O06xTn9urYLk4Pwnqp-efx_MfXhZKrDq2JwTegOztedMm6_rSvbqXsuo8jvsh8T/exec",
+  QUESTION_API_URL: "https://script.google.com/macros/s/AKfycbykunoXUXnsCsjqzvHHsOGs4sG-B74Ia5Qz4eip-cNkfkilxZago15Vpe7u_LODtfqBEg/exec",
   GOOGLE_CLIENT_ID: "958495587537-sm7jsicn5e8j3bbvj1m49j5c0681k6p5.apps.googleusercontent.com",
   ALLOWED_EMAIL_DOMAIN: "@tcss.edu.hk",
   QUESTIONS_PER_SESSION: 20,
@@ -115,6 +115,7 @@ const CONFIG = {
   WRONG_BOOK_MASTERY_THRESHOLD: 3,
   STORAGE: {
     username: 'bio_revise_username',
+    userEmail: 'bio_revise_user_email',   /* 🆕 記錄 Google 帳戶 email 用於偵測帳號衝突 */
     darkMode: 'bio_revise_dark_mode',
     wrongBookPrefix: 'bio_wrongbook_'
   }
@@ -151,7 +152,6 @@ const SHOP_ITEMS = [
   }
 ];
 
-/* 預建所有可選章節清單，避免每次 render 重建 */
 const ALL_CHAPTERS = (() => {
   const arr = [];
   for (let i = CONFIG.CHAPTER_RANGE.start; i <= CONFIG.CHAPTER_RANGE.end; i++) arr.push(i);
@@ -165,6 +165,30 @@ const ALL_CHAPTERS = (() => {
 const { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext, memo } = React;
 const MotionLib = window.Motion || { motion: { div: 'div' }, AnimatePresence: ({children}) => children };
 const { motion, AnimatePresence } = MotionLib;
+
+/* 🆕 ────────────────────────────────────────────────────────────
+ * 清除所有應用 localStorage（登出 / 帳戶衝突時使用）
+ * 會清除所有以 "bio_" 開頭的 key，包括：
+ *   - bio_revise_username（用戶名）
+ *   - bio_revise_user_email（Google email）
+ *   - bio_revise_dark_mode（深色模式）
+ *   - bio_wrongbook_*（各用戶的錯題簿）
+ * ──────────────────────────────────────────────────────────── */
+function clearAllAppStorage() {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('bio_')) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    console.log(`[Auth] 已清除 ${keysToRemove.length} 筆本地資料`);
+  } catch (e) {
+    console.warn("清除 localStorage 失敗:", e);
+  }
+}
 
 function formatText(text) {
   if (text === null || text === undefined) return '';
@@ -234,7 +258,6 @@ function normalizeNameForMatch(name) {
     .join(' ');
 }
 
-/* 預先正規化老師名稱清單（模組載入時一次） */
 const TEACHER_NORMALIZED_SET = new Set(CONFIG.TEACHER_NAMES.map(normalizeNameForMatch));
 
 function isTeacher(name) {
@@ -304,16 +327,13 @@ function safeDateStr(raw) {
   const s = String(raw).trim();
   if (!s) return "";
   try {
-    // 直接解析（ISO 8601 / RFC 2822 等標準格式）
     let d = new Date(s);
     if (!isNaN(d.getTime())) return getHKDateString(d);
-    // YYYY/MM/DD 格式（斜線分隔，Google Sheet 常見輸出）
     const m1 = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     if (m1) {
       d = new Date(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3]));
       if (!isNaN(d.getTime())) return getHKDateString(d);
     }
-    // DD/MM/YYYY 格式（香港日期慣用格式）
     const m2 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (m2) {
       d = new Date(Number(m2[3]), Number(m2[2]) - 1, Number(m2[1]));
@@ -325,9 +345,6 @@ function safeDateStr(raw) {
   }
 }
 
-/* 🆕 共用 helper：解析一筆紀錄的 score/total 並做範圍驗證
- * 原本在 computeChapterStats / computeDailyAccuracy / StatsScreen / TeacherStatsScreen 各自都寫一次，
- * 現在統一使用，避免邏輯偏差。 */
 function parseScoreTotal(r) {
   const score = parseFloat(String(r[2] || '0').replace(/[^\d.]/g, '').trim()) || 0;
   const total = parseFloat(String(r[3] || '0').replace(/[^\d.]/g, '').trim()) || 0;
@@ -493,15 +510,12 @@ function getStudentRecords(records, userName) {
   if (!records || !userName) return [];
   const targetRaw   = String(userName).trim();
   const targetShort = shortenName(targetRaw);
-  /* 預計算小寫版本，避免在 filter 裡重複執行 toLowerCase() */
   const targetRawLC   = targetRaw.toLowerCase();
   const targetShortLC = targetShort.toLowerCase();
 
   return records.filter(r => {
     const rawName   = String(r[1] || '').trim();
     const shortName = shortenName(rawName);
-    /* 優先完全一致，再以大小寫不敏感的 shortName 作後備匹配
-     * （處理 Google Sign-In 名稱大小寫與 Sheet 儲存不一致的情況） */
     const sameUser =
       rawName === targetRaw ||
       shortName === targetShort ||
@@ -567,31 +581,23 @@ function computeChapterStats(records) {
   });
 }
 
-/* 🆕 computeDailyBestBattle：每日取最高戰況分數（battlePoint）的一次練習來繪線圖 */
 function computeDailyBestBattle(records, days) {
   const map = new Map();
   const now = new Date();
 
   (records || []).forEach(r => {
-    /* ── 日期正規化：統一轉為 YYYY-MM-DD（HK 時區）───────────────────────
-     * Google Sheet 可能以不同格式儲存 DateStr（如 "2025/05/14"、
-     * "2025-05-14T00:00:00Z"…），直接用字串作為 map key 會導致與
-     * getHKDateString() 產生的 "2025-05-14" 無法匹配，使線圖空白。
-     * 現改用 safeDateStr() 先解析再正規化，兩端格式一致。
-     * ──────────────────────────────────────────────────────────────── */
     let dateStr = '';
     const rawDate = String(r[7] || '').trim();
     if (rawDate) {
-      dateStr = safeDateStr(rawDate);          // 正規化為 "YYYY-MM-DD"
+      dateStr = safeDateStr(rawDate);
     }
-    // 若 DateStr 欄位缺失或無法解析，改用 Timestamp 欄 (r[0])
     if (!dateStr) {
       const rawTs = r[0];
       if (rawTs) {
         try {
           const parsed = new Date(rawTs);
           if (!isNaN(parsed.getTime())) dateStr = getHKDateString(parsed);
-        } catch (e) { /* ignore */ }
+        } catch (e) { }
       }
     }
     if (!dateStr) return;
@@ -648,7 +654,6 @@ function collectImageUrls(question) {
   return urls;
 }
 
-/* 🆕 真正的 LRU 圖片快取：存取時會重新插入，真正淘汰最久未用 */
 const imageCache = new Map();
 function preloadImage(url) {
   if (!url) return;
@@ -797,22 +802,64 @@ function useDarkMode() {
   return [isDark, setIsDark];
 }
 
+/* 🆕 ──────────────────────────────────────────────────────────
+ * usePersistedUser：管理用戶登入狀態（持久化到 localStorage）
+ *
+ * 新規格：
+ *   1. 用 (username, userEmail) 兩個欄位共同識別登入狀態
+ *   2. 啟動時若兩者不一致（只存在其中一個）→ 清空所有儲存並要求重登
+ *   3. setAndPersist(name, email) 會同時寫入兩個欄位
+ *   4. logout() 會呼叫 clearAllAppStorage() 清除所有 bio_* 資料
+ *
+ * Return: [userName, setAndPersist, logout]
+ * ────────────────────────────────────────────────────────── */
 function usePersistedUser() {
   const [userName, setUserName] = useState(() => {
     try {
-      const raw = localStorage.getItem(CONFIG.STORAGE.username) || "";
-      return raw;
-    } catch (e) { return ""; }
+      const storedName  = localStorage.getItem(CONFIG.STORAGE.username)  || "";
+      const storedEmail = localStorage.getItem(CONFIG.STORAGE.userEmail) || "";
+
+      /* 一致性檢查：兩個欄位要嘛同時存在、要嘛同時為空
+       * 若只有其中一個，代表資料不一致（可能是舊版遺留），清除重登 */
+      if ((storedName && !storedEmail) || (!storedName && storedEmail)) {
+        console.warn("[Auth] 偵測到登入資料不一致，自動清除");
+        clearAllAppStorage();
+        return "";
+      }
+      return storedName;
+    } catch (e) {
+      return "";
+    }
   });
 
-  const setAndPersist = useCallback((name) => {
+  /* 設定並持久化用戶資料
+   * @param name  用戶名（Google JWT 的 payload.name）
+   * @param email Google email（用於偵測帳戶切換） */
+  const setAndPersist = useCallback((name, email) => {
     const finalName = !name ? "" : name;
     setUserName(finalName);
     try {
       if (finalName && finalName !== "訪客 (未登入)") {
         localStorage.setItem(CONFIG.STORAGE.username, finalName);
+        if (email) {
+          localStorage.setItem(CONFIG.STORAGE.userEmail, email);
+        }
       } else {
+        /* 空字串或訪客模式：清除已登入資料（但不清錯題簿等） */
         localStorage.removeItem(CONFIG.STORAGE.username);
+        localStorage.removeItem(CONFIG.STORAGE.userEmail);
+      }
+    } catch (e) {}
+  }, []);
+
+  /* 登出：清除所有應用資料 */
+  const logout = useCallback(() => {
+    clearAllAppStorage();
+    setUserName("");
+    /* 關閉 Google 自動登入，讓用戶重新選擇帳戶 */
+    try {
+      if (window.google && window.google.accounts && window.google.accounts.id) {
+        window.google.accounts.id.disableAutoSelect();
       }
     } catch (e) {}
   }, []);
@@ -822,7 +869,7 @@ function usePersistedUser() {
     else document.body.classList.remove('logged-in');
   }, [userName]);
 
-  return [userName, setAndPersist];
+  return [userName, setAndPersist, logout];
 }
 
 function useWrongBook(userName, leaderboardData, isOnline, refetchLeaderboard) {
@@ -1015,6 +1062,19 @@ function useQuestionPool() {
   return { pool, loading, error, reload };
 }
 
+/* 🆕 ──────────────────────────────────────────────────────────
+ * useGoogleSignIn：Google 登入 Hook
+ *
+ * 新增「帳戶衝突偵測」邏輯：
+ *   1. 登入成功時，比對新帳戶 email 與 localStorage 儲存的 email
+ *   2. 若兩者不同（代表換了另一個 Google 帳戶）
+ *      → 清除所有 bio_* 資料
+ *      → 顯示警告 toast
+ *      → 延遲後以新帳戶登入
+ *   3. 若相同或無舊紀錄 → 正常登入
+ *
+ * 注意：onSignIn 現在接收 (name, email) 兩個參數
+ * ────────────────────────────────────────────────────────── */
 function useGoogleSignIn(userName, onSignIn) {
   const toast = useToast();
   useEffect(() => {
@@ -1040,7 +1100,30 @@ function useGoogleSignIn(userName, onSignIn) {
         callback: (response) => {
           const payload = decodeJwtResponse(response.credential);
           if (payload.email && payload.email.endsWith(CONFIG.ALLOWED_EMAIL_DOMAIN)) {
-            onSignIn(payload.name);
+            /* 🆕 偵測帳戶衝突：比對 localStorage 內儲存的 email */
+            let storedEmail = '';
+            try {
+              storedEmail = localStorage.getItem(CONFIG.STORAGE.userEmail) || '';
+            } catch (e) {}
+
+            if (storedEmail && storedEmail !== payload.email) {
+              /* 🆕 偵測到不同帳戶登入 → 清除所有資料 */
+              console.warn(`[Auth] 帳戶衝突：舊=${storedEmail} 新=${payload.email}`);
+              clearAllAppStorage();
+              toast(
+                `⚠️ 偵測到不同的 Google 帳戶\n舊帳戶：${storedEmail}\n新帳戶：${payload.email}\n\n已清除本地所有資料，將以新帳戶登入`,
+                "warning",
+                6000
+              );
+              /* 延遲後以新帳戶登入，讓 toast 有機會顯示 */
+              setTimeout(() => {
+                onSignIn(payload.name, payload.email);
+              }, 800);
+            } else {
+              /* 無舊紀錄或是同一帳戶 → 正常登入 */
+              onSignIn(payload.name, payload.email);
+            }
+
             if (window.google) window.google.accounts.id.cancel();
           } else {
             toast(`登入失敗：請使用學校的 ${CONFIG.ALLOWED_EMAIL_DOMAIN} 帳號登入`, "error", 5000);
@@ -1176,7 +1259,6 @@ function useAntiCheat(gameState, currentIndex, isWrongBookMode) {
  * 【區塊 6】共用小組件 + 統計圖表元件
  * ============================================================================ */
 
-/* 🆕 React.memo 包裹避免不必要 re-render */
 const LoadingImage = memo(function LoadingImage({
   src,
   alt = '',
@@ -1473,7 +1555,8 @@ function UserProfileCard({ user, userName, currentStreak, levelInfo, onLogout, o
           </div>
         </div>
         <button onClick={onLogout}
-          className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors flex flex-col items-center bg-white dark:bg-transparent p-1 rounded z-20 relative">
+          className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors flex flex-col items-center bg-white dark:bg-transparent p-1 rounded z-20 relative"
+          title="登出並清除所有本地資料">
           <i className="fas fa-sign-out-alt mb-1"></i>登出
         </button>
       </div>
@@ -1568,75 +1651,6 @@ const DonutChart = memo(function DonutChart({ correct, total, size = 160 }) {
   );
 });
 
-const RadarChart = memo(function RadarChart({ data, size = 320 }) {
-  if (!data || data.length < 3) {
-    return <div className="text-center text-gray-400 dark:text-gray-500 py-8 text-sm">
-      需要至少 3 個章節的練習紀錄才能繪製雷達圖
-    </div>;
-  }
-  const maxPoints = 10;
-  const points = data.slice(0, maxPoints);
-  const n = points.length;
-  const cx = size / 2, cy = size / 2;
-  const R = size / 2 - 48;
-  const rings = [20, 40, 60, 80, 100];
-
-  const getPoint = (i, pct) => {
-    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
-    return {
-      x: cx + R * (pct / 100) * Math.cos(angle),
-      y: cy + R * (pct / 100) * Math.sin(angle)
-    };
-  };
-
-  const dataPoints = points.map((p, i) => getPoint(i, p.accuracy));
-  const polygonPath = dataPoints.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="max-w-full">
-      {rings.map(r => (
-        <polygon key={r}
-          points={points.map((_, i) => {
-            const pt = getPoint(i, r);
-            return `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`;
-          }).join(' ')}
-          fill="none"
-          className="stroke-gray-200 dark:stroke-gray-700"
-          strokeWidth="1" />
-      ))}
-      {points.map((_, i) => {
-        const pt = getPoint(i, 100);
-        return <line key={i} x1={cx} y1={cy} x2={pt.x} y2={pt.y}
-                     className="stroke-gray-200 dark:stroke-gray-700" strokeWidth="1" />;
-      })}
-      <polygon points={polygonPath} fill="rgba(99, 102, 241, 0.25)"
-               className="stroke-indigo-500" strokeWidth="2" strokeLinejoin="round" />
-      {dataPoints.map((p, i) => (
-        <circle key={i} cx={p.x} cy={p.y} r="4"
-                className="fill-indigo-600 stroke-white dark:stroke-gray-800" strokeWidth="2" />
-      ))}
-      {points.map((p, i) => {
-        const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
-        const labelR = R + 22;
-        const lx = cx + labelR * Math.cos(angle);
-        const ly = cy + labelR * Math.sin(angle);
-        return (
-          <g key={i}>
-            <text x={lx} y={ly - 4} textAnchor="middle" dominantBaseline="middle"
-                  className="fill-gray-700 dark:fill-gray-300" fontSize="11" fontWeight="600">
-              {p.chapter}
-            </text>
-            <text x={lx} y={ly + 8} textAnchor="middle" dominantBaseline="middle"
-                  className="fill-indigo-500 dark:fill-indigo-400" fontSize="10" fontWeight="700">
-              {p.accuracy}%
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-});
-
 const LineChart = memo(function LineChart({ data, height = 240 }) {
   const [isDark, setIsDark] = useState(() =>
     typeof document !== 'undefined' &&
@@ -1670,7 +1684,6 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
     );
   }
 
-  /* 動態 Y 軸上限：取最高 battlePoint，向上取整到美觀刻度 */
   const maxBP = Math.max(0, ...data.map(d => d.battlePoint ?? 0));
   const rawMax = maxBP <= 0 ? 200 : maxBP;
   const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax)));
@@ -1977,8 +1990,12 @@ function MasteryMatrix({
  * 【區塊 7】SCREEN COMPONENTS
  * ============================================================================ */
 
+/* 🆕 StartScreen 現在接收：
+ *   - setUserName(name, email)：設定並持久化用戶資料
+ *   - onLogout()：完整登出並清除所有本地資料
+ */
 function StartScreen({
-  onStart, leaderboardData, userName, setUserName,
+  onStart, leaderboardData, userName, setUserName, onLogout,
   isGuest, setIsGuest, onShowShop, onShowLeaderboard,
   onShowStats, onShowTeacherStats,
   settings, setSettings, mcqCount, questionLoadError, onReloadQuestions
@@ -2074,7 +2091,7 @@ function StartScreen({
               currentStreak={currentStreak}
               levelInfo={levelInfo}
               isLoading={isProfileLoading}
-              onLogout={() => setUserName("")}
+              onLogout={onLogout}
               onShowShop={onShowShop}
             />
           )}
@@ -2245,7 +2262,6 @@ function FlashCard({ data, onSubmit, currentIndex, totalCount, startTime, mySkip
   const [imgRefreshKey, setImgRefreshKey] = useState(0);
   const [isRefreshSpinning, setIsRefreshSpinning] = useState(false);
 
-  /* 🆕 直接用 useMemo 產生洗牌選項，移除原本的 useState+useEffect 額外渲染 */
   const shuffledData = useMemo(() => {
     if (!data) return [];
     const opts = resolveOptions(data);
@@ -2506,7 +2522,6 @@ function StatsScreen({ onBack, userName, leaderboardData, wrongBookCount }) {
   );
   const user = findUser(leaderboardData, viewingUser);
 
-  /* 🆕 合併使用 parseScoreTotal，單次遍歷完成三個加總 */
   const { totalAttempts, totalCorrect, totalQuestions, avgAccuracy } = useMemo(() => {
     let totalCorrect = 0, totalQuestions = 0;
     records.forEach(r => {
@@ -2835,7 +2850,6 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
       s.totalAttempted += st.total;
       s.attempts += 1;
 
-      // 計算最後練習日期 & 本週練習次數
       const rawRecordDate = String(r[7] || '').trim();
       let recDateStr = rawRecordDate ? safeDateStr(rawRecordDate) : null;
       if (!recDateStr && r[0]) {
@@ -3802,7 +3816,10 @@ function ResultScreen({ results, onRestart, totalTime, leaderboardData, userName
 function BiologyFlashcardApp() {
   const toast = useToast();
   const [gameState, setGameState] = useState('start');
-  const [userName, setUserName]   = usePersistedUser();
+
+  /* 🆕 usePersistedUser 現在回傳三個值：[userName, setUserName, logout] */
+  const [userName, setUserName, logoutUser] = usePersistedUser();
+
   const [isGuest, setIsGuest]     = useState(false);
   const [isDark, setIsDark]       = useDarkMode();
 
@@ -3844,6 +3861,24 @@ function BiologyFlashcardApp() {
 
   const { tabSwitchCount, recordAnswerTime, resetAntiCheat, getCheatReport } = 
     useAntiCheat(gameState, currentIndex, isWrongBookMode);
+
+  /* 🆕 完整登出流程：清空遊戲狀態 + 清除所有 localStorage */
+  const handleLogout = useCallback(() => {
+    /* 先重置遊戲相關狀態 */
+    setGameState('start');
+    setIsGuest(false);
+    setIsWrongBookMode(false);
+    setQuestions([]);
+    setResults([]);
+    setIndex(0);
+    pendingQueueRef.current = [];
+    setPendingSubmitCount(0);
+
+    /* 呼叫 hook 的 logout 函式，清除所有 bio_* localStorage */
+    logoutUser();
+
+    toast("已成功登出，所有本地資料已清除", "info", 3000);
+  }, [logoutUser, toast]);
 
   useEffect(() => {
     if (!isWrongBookMode) return;
@@ -4065,7 +4100,11 @@ function BiologyFlashcardApp() {
   const handleRestart = useCallback(() => {
     setGameState('start');
     setIsWrongBookMode(false);
-    if (isGuest) { setUserName(""); setIsGuest(false); }
+    /* 訪客模式結束後清除訪客身分，但已登入用戶保持登入狀態 */
+    if (isGuest) {
+      setUserName("");
+      setIsGuest(false);
+    }
   }, [isGuest, setUserName]);
 
   const handleRemoveFromBook = useCallback((questionId) => {
@@ -4115,6 +4154,7 @@ function BiologyFlashcardApp() {
               onStart={startSession}
               leaderboardData={leaderboardData}
               userName={userName} setUserName={setUserName}
+              onLogout={handleLogout}
               isGuest={isGuest} setIsGuest={setIsGuest}
               onShowShop={() => setGameState('shop')}
               onShowLeaderboard={() => setGameState('leaderboard')}
