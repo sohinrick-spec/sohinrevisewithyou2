@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>軒軒陪你test程式</title>
+  <title>軒軒陪你溫Bio</title>
   
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -543,7 +543,8 @@ function computeChapterStats(records) {
   });
 }
 
-function computeDailyAccuracy(records, days) {
+/* 🆕 computeDailyBestBattle：每日取最高戰況分數（battlePoint）的一次練習來繪線圖 */
+function computeDailyBestBattle(records, days) {
   const map = new Map();
   const now = new Date();
 
@@ -561,13 +562,22 @@ function computeDailyAccuracy(records, days) {
     const st = parseScoreTotal(r);
     if (!st) return;
 
+    const timeMs  = Number(r[4]) || 0;
+    const scope   = String(r[8] || '');
+    const bp      = calculateBattlePoint(st.score, st.total, timeMs, scope);
+    const accuracy = st.total > 0 ? Math.max(0, Math.min(100, Math.round((st.score / st.total) * 100))) : 0;
+
     if (!map.has(dateStr)) {
-      map.set(dateStr, { correct: 0, total: 0, attempts: 0 });
+      map.set(dateStr, { battlePoint: -1, accuracy: 0, correct: 0, total: 0, attempts: 0 });
     }
     const s = map.get(dateStr);
-    s.correct  += st.score;
-    s.total    += st.total;
     s.attempts += 1;
+    if (bp > s.battlePoint) {
+      s.battlePoint = bp;
+      s.accuracy    = accuracy;
+      s.correct     = st.score;
+      s.total       = st.total;
+    }
   });
 
   const result = [];
@@ -577,19 +587,14 @@ function computeDailyAccuracy(records, days) {
     const dStr = getHKDateString(d);
     const s = map.get(dStr);
 
-    let accuracy = null;
-    if (s && s.total > 0) {
-      accuracy = Math.round((s.correct / s.total) * 100);
-      accuracy = Math.max(0, Math.min(100, accuracy));
-    }
-
     result.push({
-      date: dStr,
-      label: `${d.getMonth() + 1}/${d.getDate()}`,
-      accuracy,
-      attempts: s ? s.attempts : 0,
-      correct: s ? s.correct : 0,
-      total: s ? s.total : 0
+      date:        dStr,
+      label:       `${d.getMonth() + 1}/${d.getDate()}`,
+      battlePoint: (s && s.battlePoint >= 0) ? s.battlePoint : null,
+      accuracy:    (s && s.battlePoint >= 0) ? s.accuracy    : null,
+      attempts:    s ? s.attempts : 0,
+      correct:     s ? s.correct  : 0,
+      total:       s ? s.total    : 0
     });
   }
   return result;
@@ -1628,24 +1633,31 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
     );
   }
 
+  /* 動態 Y 軸上限：取最高 battlePoint，向上取整到美觀刻度 */
+  const maxBP = Math.max(0, ...data.map(d => d.battlePoint ?? 0));
+  const rawMax = maxBP <= 0 ? 200 : maxBP;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax)));
+  const yMax = Math.ceil(rawMax / magnitude) * magnitude;
+  const gridValues = [0, 0.25, 0.5, 0.75, 1.0].map(f => Math.round(f * yMax));
+
   const width  = Math.max(500, data.length * 44);
-  const padding = { top: 32, right: 24, bottom: 40, left: 44 };
+  const padding = { top: 32, right: 24, bottom: 40, left: 52 };
   const innerW = width - padding.left - padding.right;
   const innerH = height - padding.top - padding.bottom;
 
   const multi = data.length > 1;
   const xStep = multi ? innerW / (data.length - 1) : 0;
   const getX  = (i) => multi ? padding.left + i * xStep : padding.left + innerW / 2;
-  const getY  = (val) => padding.top + innerH * (1 - val / 100);
+  const getY  = (val) => padding.top + innerH * (1 - val / yMax);
 
   const indexed = data.map((d, i) => ({ ...d, __i: i }));
   const valid   = indexed.filter(
-    d => typeof d.accuracy === 'number' && isFinite(d.accuracy)
+    d => typeof d.battlePoint === 'number' && d.battlePoint !== null && isFinite(d.battlePoint)
   );
 
   const pathD = valid.length > 0
     ? valid.map((d, idx) =>
-        `${idx === 0 ? 'M' : 'L'} ${getX(d.__i).toFixed(2)} ${getY(d.accuracy).toFixed(2)}`
+        `${idx === 0 ? 'M' : 'L'} ${getX(d.__i).toFixed(2)} ${getY(d.battlePoint).toFixed(2)}`
       ).join(' ')
     : '';
 
@@ -1663,7 +1675,7 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
         viewBox={`0 0 ${width} ${height}`}
         style={{ display: 'block', minWidth: '100%' }}
       >
-        {[0, 25, 50, 75, 100].map(v => (
+        {gridValues.map(v => (
           <g key={`grid-${v}`}>
             <line
               x1={padding.left} y1={getY(v)}
@@ -1675,7 +1687,7 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
               textAnchor="end" dominantBaseline="middle"
               fill={C.text} fontSize="10"
             >
-              {v}%
+              {v}
             </text>
           </g>
         ))}
@@ -1692,14 +1704,14 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
         ))}
 
         {indexed
-          .filter(d => !(typeof d.accuracy === 'number' && isFinite(d.accuracy)))
+          .filter(d => d.battlePoint === null || d.battlePoint === undefined)
           .map(d => (
             <circle
               key={`empty-${d.__i}`}
               cx={getX(d.__i)} cy={getY(0)} r="2.5"
               fill={C.empty} opacity="0.7"
             >
-              <title>{d.date}:未練習</title>
+              <title>{d.date}：未練習</title>
             </circle>
           ))
         }
@@ -1716,7 +1728,7 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
 
         {valid.map(d => {
           const x = getX(d.__i);
-          const y = getY(d.accuracy);
+          const y = getY(d.battlePoint);
           const labelY = y - 14 < padding.top ? y + 18 : y - 14;
           return (
             <g key={`pt-${d.__i}`}>
@@ -1725,14 +1737,14 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
                 fill={C.dot} stroke={C.dotStroke} strokeWidth="2"
               >
                 <title>
-                  {d.date}: {d.accuracy}% ({d.attempts} 次練習, {Math.round(d.correct)}/{Math.round(d.total)} 題)
+                  {d.date}：戰況最高分 {d.battlePoint}（正確率 {d.accuracy}%，{d.attempts} 次練習，{Math.round(d.correct)}/{Math.round(d.total)} 題）
                 </title>
               </circle>
               <text
                 x={x} y={labelY} textAnchor="middle"
                 fill={C.label} fontSize="11" fontWeight="700"
               >
-                {d.accuracy}%
+                {d.battlePoint}
               </text>
             </g>
           );
@@ -1752,7 +1764,7 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
               textAnchor="middle" dominantBaseline="middle"
               fill={C.empty} fontSize="11"
             >
-              完成一局練習後,這裡就會出現你的曲線!
+              完成一局練習後，這裡就會出現你的曲線！
             </text>
           </g>
         )}
@@ -2484,7 +2496,7 @@ function StatsScreen({ onBack, userName, leaderboardData, wrongBookCount }) {
       .slice(0, 3),
     [chapterStats]
   );
-  const growthData = useMemo(() => computeDailyAccuracy(records, timeRange), [records, timeRange]);
+  const growthData = useMemo(() => computeDailyBestBattle(records, timeRange), [records, timeRange]);
 
   const levelInfo = getLevelInfo(user?.totalQuestions || 0);
 
@@ -2499,29 +2511,22 @@ function StatsScreen({ onBack, userName, leaderboardData, wrongBookCount }) {
   return (
     <div className="w-full max-w-5xl px-4 pb-10">
       <div className="glass-panel p-4 md:p-6 rounded-2xl shadow-xl">
-        <div className="flex items-center justify-between mb-6 border-b border-gray-200 dark:border-gray-700 pb-4 gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <button onClick={onBack}
-              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 font-bold text-sm transition-all hover:scale-105 active:scale-95 border border-indigo-200 dark:border-indigo-800 shadow-sm">
-              <i className="fas fa-arrow-left text-xs"></i>
-              <span className="hidden sm:inline">返回</span>
-            </button>
-            <h2 className="text-lg md:text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-1.5 truncate">
-              <i className="fas fa-chart-line text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i>
-              <span className="truncate">{selectedStudent ? `${shortenName(selectedStudent)} 的統計` : '我的學習統計'}</span>
-            </h2>
-          </div>
-          <div className="flex flex-col items-end gap-2 flex-shrink-0">
-            <span className="text-xs text-gray-500 dark:text-gray-400 hidden sm:block">
+        <div className="flex items-center justify-between mb-6 border-b border-gray-200 dark:border-gray-700 pb-4">
+          <h2 className="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+            <i className="fas fa-chart-line text-indigo-600 dark:text-indigo-400"></i>
+            {selectedStudent ? `${shortenName(selectedStudent)} 的學習統計` : '我的學習統計'}
+          </h2>
+          <div className="flex flex-col items-end gap-2">
+            <span className="text-xs md:text-sm text-gray-500 dark:text-gray-400">
               {shortenName(viewingUser)}
             </span>
             {isTeacherUser && (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500 dark:text-gray-400 hidden sm:inline">查看學生：</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">查看學生：</span>
                 <select
                   value={selectedStudent}
                   onChange={(e) => setSelectedStudent(e.target.value)}
-                  className="text-xs px-2 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                  className="text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
                 >
                   <option value="">我自己的統計</option>
                   {allStudents.map((student, i) => (
@@ -2719,16 +2724,13 @@ function StatsScreen({ onBack, userName, leaderboardData, wrongBookCount }) {
           </div>
           <LineChart data={growthData} />
           <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 text-center">
-            💡 每個資料點顯示當日平均正確率，懸停可查看詳細資訊
+            💡 每個資料點顯示當日所有練習中<b>最高戰況分數</b>，懸停可查看正確率與練習次數
           </p>
         </div>
 
-        <div className="flex items-center justify-center pt-2">
-          <button onClick={onBack}
-            className="flex items-center gap-2 px-6 py-2.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:border-indigo-200 dark:hover:border-indigo-700 font-medium text-sm transition-all">
-            <i className="fas fa-arrow-left text-xs"></i>返回主頁
-          </button>
-        </div>
+        <button onClick={onBack} className="w-full bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-bold py-3 rounded-xl transition-colors">
+          <i className="fas fa-arrow-left mr-2"></i>返回主頁
+        </button>
       </div>
     </div>
   );
@@ -2916,17 +2918,10 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
     <div className="w-full max-w-6xl px-4 pb-10">
       <div className="glass-panel p-4 md:p-6 rounded-2xl shadow-xl">
         <div className="flex items-center justify-between mb-6 border-b border-gray-200 dark:border-gray-700 pb-4 flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            <button onClick={onBack}
-              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-700 dark:text-amber-400 font-bold text-sm transition-all hover:scale-105 active:scale-95 border border-amber-200 dark:border-amber-800 shadow-sm">
-              <i className="fas fa-arrow-left text-xs"></i>
-              <span className="hidden sm:inline">返回</span>
-            </button>
-            <h2 className="text-lg md:text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-              <i className="fas fa-chalkboard-teacher text-amber-600 dark:text-amber-400"></i>
-              教師儀表板
-            </h2>
-          </div>
+          <h2 className="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+            <i className="fas fa-chalkboard-teacher text-amber-600 dark:text-amber-400"></i>
+            教師儀表板
+          </h2>
           <span className="text-xs md:text-sm bg-gradient-to-r from-amber-100 to-orange-100 dark:from-amber-900/50 dark:to-orange-900/50 text-amber-800 dark:text-amber-300 px-3 py-1 rounded-full font-bold">
             <i className="fas fa-user-tie mr-1"></i>{shortenName(currentUserName)}
           </span>
@@ -3121,12 +3116,9 @@ function TeacherStatsScreen({ onBack, leaderboardData, currentUserName }) {
           </div>
         </div>
 
-        <div className="flex items-center justify-center pt-2">
-          <button onClick={onBack}
-            className="flex items-center gap-2 px-6 py-2.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 hover:border-amber-200 dark:hover:border-amber-700 font-medium text-sm transition-all">
-            <i className="fas fa-arrow-left text-xs"></i>返回主頁
-          </button>
-        </div>
+        <button onClick={onBack} className="w-full bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-bold py-3 rounded-xl transition-colors">
+          <i className="fas fa-arrow-left mr-2"></i>返回主頁
+        </button>
       </div>
     </div>
   );
