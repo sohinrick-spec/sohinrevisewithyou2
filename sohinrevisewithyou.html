@@ -300,10 +300,26 @@ function shuffleArray(arr) {
 }
 
 function safeDateStr(raw) {
+  if (raw === null || raw === undefined) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
   try {
-    const d = new Date(raw);
+    // 直接解析（ISO 8601 / RFC 2822 等標準格式）
+    let d = new Date(s);
     if (!isNaN(d.getTime())) return getHKDateString(d);
-    return String(raw).split('T')[0];
+    // YYYY/MM/DD 格式（斜線分隔，Google Sheet 常見輸出）
+    const m1 = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (m1) {
+      d = new Date(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3]));
+      if (!isNaN(d.getTime())) return getHKDateString(d);
+    }
+    // DD/MM/YYYY 格式（香港日期慣用格式）
+    const m2 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (m2) {
+      d = new Date(Number(m2[3]), Number(m2[2]) - 1, Number(m2[1]));
+      if (!isNaN(d.getTime())) return getHKDateString(d);
+    }
+    return "";
   } catch (e) {
     return "";
   }
@@ -475,14 +491,22 @@ function computeRankings(leaderboardData, currentUserName, currentRunRecord) {
 
 function getStudentRecords(records, userName) {
   if (!records || !userName) return [];
-  const targetRaw = String(userName).trim();
+  const targetRaw   = String(userName).trim();
   const targetShort = shortenName(targetRaw);
+  /* 預計算小寫版本，避免在 filter 裡重複執行 toLowerCase() */
+  const targetRawLC   = targetRaw.toLowerCase();
+  const targetShortLC = targetShort.toLowerCase();
+
   return records.filter(r => {
-    const rawName = String(r[1] || '').trim();
+    const rawName   = String(r[1] || '').trim();
     const shortName = shortenName(rawName);
+    /* 優先完全一致，再以大小寫不敏感的 shortName 作後備匹配
+     * （處理 Google Sign-In 名稱大小寫與 Sheet 儲存不一致的情況） */
     const sameUser =
       rawName === targetRaw ||
-      shortName === targetShort;
+      shortName === targetShort ||
+      rawName.toLowerCase() === targetRawLC ||
+      shortName.toLowerCase() === targetShortLC;
     if (!sameUser) return false;
     const mode = String(r[6] || '').toLowerCase();
     return mode.includes('mc');
@@ -549,12 +573,25 @@ function computeDailyBestBattle(records, days) {
   const now = new Date();
 
   (records || []).forEach(r => {
-    let dateStr = String(r[7] || '').trim();
+    /* ── 日期正規化：統一轉為 YYYY-MM-DD（HK 時區）───────────────────────
+     * Google Sheet 可能以不同格式儲存 DateStr（如 "2025/05/14"、
+     * "2025-05-14T00:00:00Z"…），直接用字串作為 map key 會導致與
+     * getHKDateString() 產生的 "2025-05-14" 無法匹配，使線圖空白。
+     * 現改用 safeDateStr() 先解析再正規化，兩端格式一致。
+     * ──────────────────────────────────────────────────────────────── */
+    let dateStr = '';
+    const rawDate = String(r[7] || '').trim();
+    if (rawDate) {
+      dateStr = safeDateStr(rawDate);          // 正規化為 "YYYY-MM-DD"
+    }
+    // 若 DateStr 欄位缺失或無法解析，改用 Timestamp 欄 (r[0])
     if (!dateStr) {
-      try {
-        dateStr = getHKDateString(new Date(r[0]));
-      } catch (e) {
-        return;
+      const rawTs = r[0];
+      if (rawTs) {
+        try {
+          const parsed = new Date(rawTs);
+          if (!isNaN(parsed.getTime())) dateStr = getHKDateString(parsed);
+        } catch (e) { /* ignore */ }
       }
     }
     if (!dateStr) return;
@@ -1634,15 +1671,11 @@ const LineChart = memo(function LineChart({ data, height = 240 }) {
   }
 
   /* 動態 Y 軸上限：取最高 battlePoint，向上取整到美觀刻度 */
-  let maxBP = 0;
-  for (let _bi = 0; _bi < data.length; _bi++) {
-    const _bpv = (data[_bi].battlePoint !== null && data[_bi].battlePoint !== undefined) ? data[_bi].battlePoint : 0;
-    if (_bpv > maxBP) maxBP = _bpv;
-  }
-  const rawMax = maxBP > 0 ? maxBP : 200;
+  const maxBP = Math.max(0, ...data.map(d => d.battlePoint ?? 0));
+  const rawMax = maxBP <= 0 ? 200 : maxBP;
   const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax)));
-  const yMax = (Math.ceil(rawMax / magnitude) * magnitude) || 200;
-  const gridValues = [0, Math.round(yMax * 0.25), Math.round(yMax * 0.5), Math.round(yMax * 0.75), yMax];
+  const yMax = Math.ceil(rawMax / magnitude) * magnitude;
+  const gridValues = [0, 0.25, 0.5, 0.75, 1.0].map(f => Math.round(f * yMax));
 
   const width  = Math.max(500, data.length * 44);
   const padding = { top: 32, right: 24, bottom: 40, left: 52 };
