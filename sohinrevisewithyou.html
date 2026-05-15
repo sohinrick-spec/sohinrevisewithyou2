@@ -1901,7 +1901,7 @@ const LeaderboardTable = memo(function LeaderboardTable({ rows, type, currentUse
   );
 });
 
-const UserProfileCard = memo(function UserProfileCard({ user, userName, currentStreak, levelInfo, onLogout, onShowShop, isLoading, cumulativeCorrect }) {
+const UserProfileCard = memo(function UserProfileCard({ user, userName, currentStreak, levelInfo, onLogout, onShowShop, isLoading}) {
   const teacher = isTeacher(userName);
   return (
     <div className="bg-white dark:bg-gray-800 border-2 border-indigo-100 dark:border-indigo-800 rounded-xl p-4 shadow-sm transition-all relative overflow-hidden mb-2">
@@ -1991,25 +1991,7 @@ const UserProfileCard = memo(function UserProfileCard({ user, userName, currentS
         )}
       </div>
 
-      {/* 🆕 累計答對題目進度條 */}
-      {!isLoading && typeof cumulativeCorrect === 'number' && (
-        <div className="mt-3 pt-3 border-t border-indigo-100 dark:border-indigo-800 relative z-10">
-          <div className="flex justify-between text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-            <span>
-              <i className="fas fa-bullseye text-rose-500 mr-1"></i>
-              累計答對 <span className="font-bold text-rose-600 dark:text-rose-400">{cumulativeCorrect}</span> 題
-              <span className="text-[10px] text-gray-400 ml-1">(錯題本×2)</span>
-            </span>
-            <span className="text-rose-600 dark:text-rose-400 font-bold">
-              {Math.min(100, Math.round(cumulativeCorrect / 1000 * 100))}%
-            </span>
-          </div>
-          <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-2.5 overflow-hidden">
-            <div className="bg-gradient-to-r from-rose-400 to-pink-500 h-full rounded-full transition-all duration-700"
-                 style={{ width: `${Math.min(100, cumulativeCorrect / 1000 * 100)}%` }}></div>
-          </div>
-        </div>
-      )}
+      
     </div>
   );
 });
@@ -2742,7 +2724,6 @@ function StartScreen({
               isLoading={isProfileLoading}
               onLogout={() => setUserName("")}
               onShowShop={onShowShop}
-              cumulativeCorrect={cumulativeCorrect}
             />
           )}
         </div>
@@ -6050,7 +6031,7 @@ function BiologyFlashcardApp() {
               onReloadQuestions={reloadQuestions}
               myAssignments={myAssignments}
               onStartAssignment={(a) => startSession(a)}
-              cumulativeCorrect={cumulativeCorrect}
+
             />
           </motion.div>
         )}
