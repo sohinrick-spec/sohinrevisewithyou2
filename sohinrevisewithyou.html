@@ -4287,10 +4287,11 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
   const [enableElective, setEnableElective]     = useState(false);
   const [selectedElectives, setSelectedElectives] = useState([]);
 
-  /* 🆕 目標學生選擇 */
+ /* 🆕 目標學生選擇 */
   const [targetType, setTargetType]               = useState('All'); // All | F4 | F5 | F6 | Individual
   const [selectedStudents, setSelectedStudents]   = useState([]);
   const [studentSearch, setStudentSearch]         = useState('');
+  const [studentFormFilter, setStudentFormFilter] = useState('All'); // 🆕 'All' | '4' | '5' | '6'
 
   /* 🆕 本地 assignments 狀態（樂觀更新用，立刻反映到 UI） */
   const [localAssignments, setLocalAssignments] = useState(
@@ -4328,13 +4329,23 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
   }, [allStudents]);
 
   const filteredStudents = useMemo(() => {
-    if (!studentSearch.trim()) return allStudents;
-    const kw = studentSearch.toLowerCase();
-    return allStudents.filter(s =>
-      String(s).toLowerCase().includes(kw) ||
-      shortenName(s).toLowerCase().includes(kw)
-    );
-  }, [allStudents, studentSearch]);
+    let list = allStudents;
+
+    // 🆕 先依年級過濾
+    if (studentFormFilter !== 'All') {
+      list = list.filter(s => getStudentForm(s) === studentFormFilter);
+    }
+
+    // 再依關鍵字過濾
+    if (studentSearch.trim()) {
+      const kw = studentSearch.toLowerCase();
+      list = list.filter(s =>
+        String(s).toLowerCase().includes(kw) ||
+        shortenName(s).toLowerCase().includes(kw)
+      );
+    }
+    return list;
+  }, [allStudents, studentSearch, studentFormFilter]);
 
   const toggleChapter = useCallback((num) => {
     setSelectedChapters(prev =>
@@ -4606,15 +4617,64 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
                 <input type="text" value={studentSearch} onChange={e => setStudentSearch(e.target.value)}
                   placeholder="🔍 搜尋學生姓名..."
                   className="w-full px-3 py-1.5 mb-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm" />
-                <div className="flex gap-2 flex-wrap mb-2 text-xs">
-                  <button onClick={() => selectFormStudents('4')} className="px-2 py-1 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200">+ 全選中四</button>
-                  <button onClick={() => selectFormStudents('5')} className="px-2 py-1 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200">+ 全選中五</button>
-                  <button onClick={() => selectFormStudents('6')} className="px-2 py-1 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200">+ 全選中六</button>
-                  <button onClick={() => setSelectedStudents([])} className="px-2 py-1 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded hover:bg-gray-200">清空</button>
+
+                {/* 🆕 年級過濾頁籤 */}
+                <div className="flex gap-1 mb-2 flex-wrap">
+                  {[
+                    { id: 'All', label: '全部', count: allStudents.length },
+                    { id: '4',   label: '中四同學', count: studentsByForm['4'].length },
+                    { id: '5',   label: '中五同學', count: studentsByForm['5'].length },
+                    { id: '6',   label: '中六同學', count: studentsByForm['6'].length }
+                  ].map(f => (
+                    <button key={f.id} onClick={() => setStudentFormFilter(f.id)}
+                      className={`px-3 py-1 text-xs rounded-full font-medium transition-all flex items-center gap-1 ${
+                        studentFormFilter === f.id
+                          ? 'bg-blue-500 text-white shadow-sm'
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-blue-100 dark:hover:bg-gray-600'
+                      }`}>
+                      {f.label}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                        studentFormFilter === f.id
+                          ? 'bg-white/30'
+                          : 'bg-white dark:bg-gray-800'
+                      }`}>
+                        {f.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* 🆕 快捷操作（依當前過濾結果操作）*/}
+                <div className="flex gap-2 flex-wrap mb-2 text-xs items-center">
+                  <button
+                    onClick={() => {
+                      setSelectedStudents(prev => {
+                        const set = new Set(prev);
+                        for (let i = 0; i < filteredStudents.length; i++) set.add(filteredStudents[i]);
+                        return Array.from(set);
+                      });
+                    }}
+                    className="px-2 py-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded hover:bg-green-200 font-medium">
+                    <i className="fas fa-check-double mr-1"></i>全選當前 {filteredStudents.length} 人
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedStudents(prev => {
+                        const removeSet = new Set(filteredStudents);
+                        return prev.filter(s => !removeSet.has(s));
+                      });
+                    }}
+                    className="px-2 py-1 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 rounded hover:bg-orange-200">
+                    取消當前
+                  </button>
+                  <button onClick={() => setSelectedStudents([])} className="px-2 py-1 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded hover:bg-gray-200">
+                    全部清空
+                  </button>
                   <span className={`ml-auto px-2 py-1 rounded font-bold ${selectedStudents.length === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
                     已選 {selectedStudents.length} 人
                   </span>
                 </div>
+                
                 <div className="max-h-48 overflow-y-auto custom-scrollbar grid grid-cols-2 md:grid-cols-3 gap-1 p-2 bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
                   {filteredStudents.length === 0 ? (
                     <div className="col-span-full text-center text-gray-400 text-xs py-4">沒有符合的學生</div>
