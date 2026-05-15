@@ -93,7 +93,7 @@
  * 【版本檢查系統】自動偵測新版本並提示用戶刷新
  * ============================================================================ */
 
-const APP_VERSION = "2026.05.15.v34";                  // ⚠️ 每次發佈要手動改
+const APP_VERSION = "2026.05.15.v36";                  // ⚠️ 每次發佈要手動改
 const VERSION_CHECK_URL = "./version.json";
 const VERSION_CHECK_INTERVAL = 5 * 60 * 1000;        // 每 5 分鐘檢查一次
 
@@ -4277,35 +4277,170 @@ function ShopScreen({ onBack, userName, leaderboardData, fetchLeaderboard, isOnl
 function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onViewReport, onRefresh }) {
   const toast = useToast();
   const [title, setTitle] = useState('本週任務');
-  const [scope, setScope] = useState('Ch.25');
   const [count, setCount] = useState(20);
   const [dueDate, setDueDate] = useState('');
   const [creating, setCreating] = useState(false);
 
-  const assignments = (leaderboardData && leaderboardData.assignments) || [];
+  /* 🆕 範圍選擇器（仿主頁 UI） */
+  const [enableCore, setEnableCore]             = useState(true);
+  const [selectedChapters, setSelectedChapters] = useState([25]);
+  const [enableElective, setEnableElective]     = useState(false);
+  const [selectedElectives, setSelectedElectives] = useState([]);
+
+  /* 🆕 目標學生選擇 */
+  const [targetType, setTargetType]               = useState('All'); // All | F4 | F5 | F6 | Individual
+  const [selectedStudents, setSelectedStudents]   = useState([]);
+  const [studentSearch, setStudentSearch]         = useState('');
+
+  /* 🆕 本地 assignments 狀態（樂觀更新用，立刻反映到 UI） */
+  const [localAssignments, setLocalAssignments] = useState(
+    () => (leaderboardData && leaderboardData.assignments) || []
+  );
+
+  /* 當雲端資料更新時同步本地狀態 */
+  useEffect(() => {
+    if (leaderboardData && leaderboardData.assignments) {
+      setLocalAssignments(leaderboardData.assignments);
+    }
+  }, [leaderboardData]);
+
+  const assignments = localAssignments;
+
+  /* 全校學生清單（排除訪客與老師） */
+  const allStudents = useMemo(() => {
+    const users = (leaderboardData && leaderboardData.users) || [];
+    return users
+      .map(u => String(u[0] || '').trim())
+      .filter(n => n && n !== '訪客 (未登入)' && !isTeacher(n))
+      .sort();
+  }, [leaderboardData]);
+
+  /* 依年級分組學生（顯示用）*/
+  const studentsByForm = useMemo(() => {
+    const groups = { '4': [], '5': [], '6': [], 'other': [] };
+    for (let i = 0; i < allStudents.length; i++) {
+      const s = allStudents[i];
+      const f = getStudentForm(s);
+      if (f === '4' || f === '5' || f === '6') groups[f].push(s);
+      else groups.other.push(s);
+    }
+    return groups;
+  }, [allStudents]);
+
+  const filteredStudents = useMemo(() => {
+    if (!studentSearch.trim()) return allStudents;
+    const kw = studentSearch.toLowerCase();
+    return allStudents.filter(s =>
+      String(s).toLowerCase().includes(kw) ||
+      shortenName(s).toLowerCase().includes(kw)
+    );
+  }, [allStudents, studentSearch]);
+
+  const toggleChapter = useCallback((num) => {
+    setSelectedChapters(prev =>
+      prev.includes(num) ? prev.filter(c => c !== num) : [...prev, num].sort((a, b) => a - b)
+    );
+  }, []);
+
+  const toggleElective = useCallback((code) => {
+    setSelectedElectives(prev =>
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code].sort()
+    );
+  }, []);
+
+  const toggleStudent = useCallback((name) => {
+    setSelectedStudents(prev =>
+      prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]
+    );
+  }, []);
+
+  const selectFormStudents = useCallback((form) => {
+    const list = studentsByForm[form] || [];
+    setSelectedStudents(prev => {
+      const set = new Set(prev);
+      for (let i = 0; i < list.length; i++) set.add(list[i]);
+      return Array.from(set);
+    });
+  }, [studentsByForm]);
+
+  const buildScope = () => {
+    const parts = [];
+    if (enableCore && selectedChapters.length > 0) {
+      parts.push(selectedChapters.map(c => `Ch.${c}`).join(','));
+    }
+    if (enableElective && selectedElectives.length > 0) {
+      parts.push(selectedElectives.join(','));
+    }
+    return parts.join('|');
+  };
+
+  const buildTargetDesc = () => {
+    if (targetType === 'All') return '全校';
+    if (targetType === 'F4') return '中四 (F.4)';
+    if (targetType === 'F5') return '中五 (F.5)';
+    if (targetType === 'F6') return '中六 (F.6)';
+    if (targetType === 'Individual') return `${selectedStudents.length} 位指定學生`;
+    return '全校';
+  };
 
   const handleCreate = async () => {
     if (!title.trim()) return toast('請輸入任務標題', 'warning', 3000);
-    if (!scope.trim()) return toast('請輸入範圍（如 Ch.25 或 Ch.5,Ch.6|E1）', 'warning', 3000);
+    const scopeStr = buildScope();
+    if (!scopeStr) return toast('請至少選擇一個章節或選修單元', 'warning', 3000);
     const cnt = Number(count);
     if (!cnt || cnt < 1 || cnt > 100) return toast('題數必須介於 1-100', 'warning', 3000);
+    if (targetType === 'Individual' && selectedStudents.length === 0) {
+      return toast('請至少選擇一位學生', 'warning', 3000);
+    }
+
+    let targetForm = 'All';
+    let targetStudentList = [];
+    if (targetType === 'F4') targetForm = '4';
+    else if (targetType === 'F5') targetForm = '5';
+    else if (targetType === 'F6') targetForm = '6';
+    else if (targetType === 'Individual') targetStudentList = selectedStudents;
 
     setCreating(true);
     try {
       const result = await api.createAssignment({
         title: title.trim(),
-        scope: scope.trim(),
+        scope: scopeStr,
         questionCount: cnt,
         dueDate,
-        createdBy: currentUserName
+        createdBy: currentUserName,
+        targetForm,
+        targetStudents: targetStudentList
       });
       if (result.success) {
-        toast('🎉 派卷成功！學生下次登入會看到此任務。', 'success', 4000);
+        toast(`🎉 派卷成功！派給：${buildTargetDesc()}`, 'success', 4000);
+
+        /* 🆕 樂觀更新：立即把新任務加進本地清單 */
+        const optimistic = {
+          id: result.id || `tmp_${Date.now()}`,
+          title: title.trim(),
+          scope: scopeStr,
+          questionCount: cnt,
+          dueDate,
+          createdBy: currentUserName,
+          targetForm,
+          targetStudents: targetStudentList,
+          active: true
+        };
+        setLocalAssignments(prev => [optimistic, ...prev]);
+
+        // 重置表單
         setTitle('本週任務');
-        setScope('Ch.25');
+        setSelectedChapters([25]);
+        setSelectedElectives([]);
+        setEnableCore(true);
+        setEnableElective(false);
         setCount(20);
         setDueDate('');
-        onRefresh();
+        setTargetType('All');
+        setSelectedStudents([]);
+
+        // 🆕 延遲拉雲端資料（給 Google Sheets 寫入時間）
+        setTimeout(() => onRefresh(), 1800);
       } else {
         toast('派卷失敗：' + (result.error || '未知錯誤'), 'error', 4000);
       }
@@ -4322,7 +4457,11 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
     try {
       await api.toggleAssignment(a.id, false);
       toast('已停用任務', 'info', 2500);
-      onRefresh();
+
+      /* 🆕 樂觀更新：立即從本地清單移除 */
+      setLocalAssignments(prev => prev.filter(x => x.id !== a.id));
+
+      setTimeout(() => onRefresh(), 1500);
     } catch (e) {
       toast('操作失敗', 'error', 3000);
     }
@@ -4344,18 +4483,13 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
           <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
             <i className="fas fa-plus-circle text-pink-500"></i>建立新任務
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
+
+          {/* 任務標題 / 題數 / 截止日 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+            <div className="md:col-span-2">
               <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">任務標題</label>
               <input className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 text-sm"
                 placeholder="例：第三週 Ch.25 練習" value={title} onChange={e => setTitle(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">
-                範圍 <span className="text-gray-400">(用 , 分隔多章；用 | 分核心/選修)</span>
-              </label>
-              <input className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 text-sm font-mono"
-                placeholder="Ch.25 或 Ch.5,Ch.6|E1" value={scope} onChange={e => setScope(e.target.value)} />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">題數</label>
@@ -4370,8 +4504,143 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
                 value={dueDate} onChange={e => setDueDate(e.target.value)} />
             </div>
           </div>
+
+          {/* 🆕 範圍選擇器（核心課題） */}
+          <div className={`mb-3 border rounded-xl p-3 transition-all ${enableCore ? 'bg-white dark:bg-gray-800 border-indigo-200 dark:border-indigo-700' : 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700'}`}>
+            <label className="flex items-center justify-between cursor-pointer mb-2">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" checked={enableCore}
+                  onChange={(e) => setEnableCore(e.target.checked)}
+                  className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500"/>
+                <span className="font-bold text-gray-800 dark:text-gray-100 text-sm">核心課題 (Core)</span>
+              </div>
+              <span className="text-xs bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 px-2 py-1 rounded-full">
+                Ch.{CONFIG.CHAPTER_RANGE.start} - {CONFIG.CHAPTER_RANGE.end}
+              </span>
+            </label>
+            {enableCore && (
+              <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+                <div className="flex justify-between items-center mb-2">
+                  <span className={`text-xs ${selectedChapters.length < 1 ? 'text-red-500 font-bold' : 'text-gray-500'}`}>
+                    已選: {selectedChapters.length} 課
+                  </span>
+                  <div className="space-x-2">
+                    <button onClick={() => setSelectedChapters([...ALL_CHAPTERS])} className="text-xs text-indigo-600 hover:underline">全選</button>
+                    <span className="text-gray-300">|</span>
+                    <button onClick={() => setSelectedChapters([])} className="text-xs text-gray-500 hover:underline">清空</button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-5 gap-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                  {ALL_CHAPTERS.map(num => (
+                    <button key={num} onClick={() => toggleChapter(num)}
+                      className={`text-xs py-1.5 rounded-md transition-all ${
+                        selectedChapters.includes(num)
+                          ? 'bg-indigo-600 text-white shadow-md transform scale-105'
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-300 hover:bg-gray-200'
+                      }`}>
+                      Ch.{num}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 🆕 範圍選擇器（選修單元） */}
+          <div className={`mb-3 border rounded-xl p-3 transition-all ${enableElective ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700'}`}>
+            <label className="flex items-center justify-between cursor-pointer mb-2">
+              <div className="flex items-center space-x-2">
+                <input type="checkbox" checked={enableElective}
+                  onChange={(e) => setEnableElective(e.target.checked)}
+                  className="w-5 h-5 text-green-600 rounded focus:ring-green-500"/>
+                <span className="font-bold text-gray-800 dark:text-gray-100 text-sm">選修單元 (Elective)</span>
+              </div>
+              <span className="text-xs bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300 px-2 py-1 rounded-full">
+                {CONFIG.ELECTIVES.join(', ')}
+              </span>
+            </label>
+            {enableElective && (
+              <div className="mt-2 pt-2 border-t border-green-200/50">
+                <div className="flex gap-2 flex-wrap">
+                  {CONFIG.ELECTIVES.map(code => (
+                    <button key={code} onClick={() => toggleElective(code)}
+                      className={`text-sm py-2 px-4 rounded-md transition-all font-medium ${
+                        selectedElectives.includes(code)
+                          ? 'bg-green-600 text-white shadow-md transform scale-105'
+                          : 'bg-white dark:bg-gray-800 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 hover:bg-green-100 dark:hover:bg-gray-700'
+                      }`}>
+                      {code}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 🆕 目標學生選擇 */}
+          <div className="mb-3 border rounded-xl p-3 bg-white dark:bg-gray-800 border-amber-200 dark:border-amber-800">
+            <label className="font-bold text-gray-800 dark:text-gray-100 text-sm flex items-center gap-2 mb-2">
+              <i className="fas fa-bullseye text-amber-500"></i>派卷對象
+            </label>
+            <div className="flex gap-2 flex-wrap mb-2">
+              {[
+                { id: 'All', label: '全校' },
+                { id: 'F4',  label: '中四 (F.4)' },
+                { id: 'F5',  label: '中五 (F.5)' },
+                { id: 'F6',  label: '中六 (F.6)' },
+                { id: 'Individual', label: '個別學生' }
+              ].map(opt => (
+                <button key={opt.id} onClick={() => setTargetType(opt.id)}
+                  className={`text-xs py-2 px-3 rounded-md transition-all font-medium ${
+                    targetType === opt.id
+                      ? 'bg-amber-500 text-white shadow-md'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-amber-100 dark:hover:bg-gray-600'
+                  }`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {targetType === 'Individual' && (
+              <div className="mt-2 pt-2 border-t border-amber-200">
+                <input type="text" value={studentSearch} onChange={e => setStudentSearch(e.target.value)}
+                  placeholder="🔍 搜尋學生姓名..."
+                  className="w-full px-3 py-1.5 mb-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm" />
+                <div className="flex gap-2 flex-wrap mb-2 text-xs">
+                  <button onClick={() => selectFormStudents('4')} className="px-2 py-1 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200">+ 全選中四</button>
+                  <button onClick={() => selectFormStudents('5')} className="px-2 py-1 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200">+ 全選中五</button>
+                  <button onClick={() => selectFormStudents('6')} className="px-2 py-1 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200">+ 全選中六</button>
+                  <button onClick={() => setSelectedStudents([])} className="px-2 py-1 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded hover:bg-gray-200">清空</button>
+                  <span className={`ml-auto px-2 py-1 rounded font-bold ${selectedStudents.length === 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                    已選 {selectedStudents.length} 人
+                  </span>
+                </div>
+                <div className="max-h-48 overflow-y-auto custom-scrollbar grid grid-cols-2 md:grid-cols-3 gap-1 p-2 bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
+                  {filteredStudents.length === 0 ? (
+                    <div className="col-span-full text-center text-gray-400 text-xs py-4">沒有符合的學生</div>
+                  ) : filteredStudents.map(s => (
+                    <button key={s} onClick={() => toggleStudent(s)}
+                      className={`text-left text-xs px-2 py-1 rounded transition-all truncate ${
+                        selectedStudents.includes(s)
+                          ? 'bg-amber-500 text-white font-bold'
+                          : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-amber-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700'
+                      }`}>
+                      {selectedStudents.includes(s) && <i className="fas fa-check mr-1"></i>}
+                      {shortenName(s)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 p-2 rounded">
+              <i className="fas fa-info-circle mr-1"></i>
+              此任務將派給：<b>{buildTargetDesc()}</b>
+            </div>
+          </div>
+
           <button onClick={handleCreate} disabled={creating}
-            className="w-full mt-3 py-2.5 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 disabled:opacity-50 text-white font-bold rounded-lg transition flex items-center justify-center gap-2">
+            className="w-full mt-2 py-2.5 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 disabled:opacity-50 text-white font-bold rounded-lg transition flex items-center justify-center gap-2">
             {creating ? <><i className="fas fa-spinner fa-spin"></i>建立中...</> : <><i className="fas fa-paper-plane"></i>派發任務</>}
           </button>
         </div>
@@ -4381,6 +4650,10 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
           <span className="text-xs bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full">
             {assignments.length} 份
           </span>
+          <button onClick={() => onRefresh()} title="手動刷新"
+            className="ml-auto text-xs text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 px-2 py-1 rounded">
+            <i className="fas fa-sync-alt mr-1"></i>刷新
+          </button>
         </h3>
 
         {assignments.length === 0 ? (
@@ -4390,28 +4663,39 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
           </div>
         ) : (
           <div className="space-y-2 mb-4">
-            {assignments.map(a => (
-              <div key={a.id} className="flex items-center justify-between bg-white dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:shadow-md transition">
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-gray-800 dark:text-gray-100 truncate">{a.title}</div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                    <span className="font-mono">{a.scope}</span> · {a.questionCount} 題
-                    {a.dueDate && <span className="ml-2 text-red-500"><i className="fas fa-clock mr-0.5"></i>{String(a.dueDate).slice(0, 10)}</span>}
-                    <span className="ml-2 text-gray-400">建立者：{shortenName(a.createdBy || '—')}</span>
+            {assignments.map(a => {
+              let targetLabel = '全校';
+              if (a.targetStudents && Array.isArray(a.targetStudents) && a.targetStudents.length > 0) {
+                targetLabel = `${a.targetStudents.length} 位指定學生`;
+              } else if (a.targetForm && a.targetForm !== 'All') {
+                targetLabel = `中${{'4':'四','5':'五','6':'六'}[a.targetForm] || a.targetForm}`;
+              }
+              return (
+                <div key={a.id} className="flex items-center justify-between bg-white dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:shadow-md transition">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-gray-800 dark:text-gray-100 truncate">{a.title}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      <span className="font-mono">{a.scope}</span> · {a.questionCount} 題
+                      <span className="mx-1">·</span>
+                      <span className="text-amber-600 dark:text-amber-400">
+                        <i className="fas fa-bullseye mr-0.5"></i>{targetLabel}
+                      </span>
+                      {a.dueDate && <span className="ml-2 text-red-500"><i className="fas fa-clock mr-0.5"></i>{String(a.dueDate).slice(0, 10)}</span>}
+                    </div>
+                  </div>
+                  <div className="flex gap-1 flex-shrink-0">
+                    <button onClick={() => onViewReport(a)}
+                      className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded transition">
+                      <i className="fas fa-chart-bar mr-1"></i>成績單
+                    </button>
+                    <button onClick={() => handleToggle(a)} title="停用此任務"
+                      className="px-2 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-red-100 dark:hover:bg-red-900/40 text-gray-500 hover:text-red-500 text-xs rounded transition">
+                      <i className="fas fa-trash"></i>
+                    </button>
                   </div>
                 </div>
-                <div className="flex gap-1 flex-shrink-0">
-                  <button onClick={() => onViewReport(a)}
-                    className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded transition">
-                    <i className="fas fa-chart-bar mr-1"></i>成績單
-                  </button>
-                  <button onClick={() => handleToggle(a)} title="停用此任務"
-                    className="px-2 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-red-100 dark:hover:bg-red-900/40 text-gray-500 hover:text-red-500 text-xs rounded transition">
-                    <i className="fas fa-trash"></i>
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -5004,20 +5288,41 @@ useEffect(() => {
 
   /* 🆕 memoize 當前使用者，避免多處重複查找 */
   const currentUser = useMemo(() => findUser(leaderboardData, userName), [leaderboardData, userName]);
-  /* 🆕 從 leaderboardData 衍生「待辦任務 / 已交任務」 */
+  /* 🆕 從 leaderboardData 衍生「待辦任務 / 已交任務」（依目標過濾） */
   const myAssignments = useMemo(() => {
     if (!leaderboardData) return { pending: [], submitted: [], submissionMap: {} };
     const all = leaderboardData.assignments || [];
     const subs = leaderboardData.mySubmissions || [];
+
+    /* 🆕 老師自己看時不過濾；學生則依 targetForm / targetStudents 過濾 */
+    const isTeacherViewer = isTeacher(userName);
+    const myForm    = getStudentForm(userName);
+    const myShortLC = shortenName(userName).toLowerCase();
+
+    const targeted = isTeacherViewer ? all : all.filter(a => {
+      // 個別學生：列表中包含我才顯示
+      if (a.targetStudents && Array.isArray(a.targetStudents) && a.targetStudents.length > 0) {
+        return a.targetStudents.some(t =>
+          shortenName(String(t || '')).toLowerCase() === myShortLC
+        );
+      }
+      // 年級：targetForm 為 4/5/6 時必須匹配；'All' 或無值則所有人都看到
+      if (a.targetForm && a.targetForm !== 'All' && String(a.targetForm) !== String(myForm)) {
+        return false;
+      }
+      return true;
+    });
+
     const submittedIds = new Set(subs.map(s => s.assignmentId));
     const submissionMap = {};
     for (let i = 0; i < subs.length; i++) submissionMap[subs[i].assignmentId] = subs[i];
+
     return {
-      pending: all.filter(a => !submittedIds.has(a.id)),
-      submitted: all.filter(a => submittedIds.has(a.id)),
+      pending: targeted.filter(a => !submittedIds.has(a.id)),
+      submitted: targeted.filter(a => submittedIds.has(a.id)),
       submissionMap
     };
-  }, [leaderboardData]);
+  }, [leaderboardData, userName]);
 
   useEffect(() => {
     if (!isWrongBookMode) return;
