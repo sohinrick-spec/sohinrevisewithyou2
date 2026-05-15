@@ -5498,7 +5498,7 @@ function ResultScreen({ results, onRestart, totalTime, leaderboardData, userName
  * ============================================================================ */
 
 function BiologyFlashcardApp() {
-  
+
   const toast = useToast();
   const [gameState, setGameState] = useState('start');
   const [userName, setUserName]   = usePersistedUser();
@@ -5511,7 +5511,68 @@ function BiologyFlashcardApp() {
 
   /* 🆕 限時任務（speedrun）狀態 */
   const [speedrunRemainingMs, setSpeedrunRemainingMs] = useState(0);
-  const speedrunEndedRef = useRef(false);  // 防止重複結算
+  const speedrunEndedRef = useRef(false);
+
+  const { isOnline, justReconnected } = useOnlineStatus();
+
+  const [lastScope, setLastScope] = useState('');
+
+  // 🆕 [H2 修復] 記錄最近一次成績上傳完成的時間戳，用於週榜去重
+  const [currentRunSubmittedAt, setCurrentRunSubmittedAt] = useState(null);
+
+  const [isWrongBookMode, setIsWrongBookMode] = useState(false);
+  const [currentWrongStreak, setCurrentWrongStreak] = useState(0);
+  const wrongBookRemovedRef = useRef(0);
+
+  // 🆕 累計答對題目數（錯題本×2）— 以雲端為唯一真實來源
+  const [cumulativeCorrect, setCumulativeCorrect] = useState(0);
+
+  const [settings, setSettings] = useState({
+    enableCore: true,
+    selectedChapters: [...ALL_CHAPTERS],
+    enableElective: false,
+    selectedElectives: [],
+    count: CONFIG.QUESTIONS_PER_SESSION,
+    showHints: true
+  });
+
+  const [questions, setQuestions]   = useState([]);
+  const [currentIndex, setIndex]    = useState(0);
+  const [results, setResults]       = useState([]);
+  const [timerStart, setTimerStart] = useState(0);
+  const [timerMs, setTimerMs]       = useState(0);
+  const [mySkipCards, setMySkipCards] = useState(0);
+
+  const { pool: questionPool, error: questionError, reload: reloadQuestions } = useQuestionPool();
+  const { data: leaderboardData, loading: loadingRank, refetch: refetchLeaderboard } = useLeaderboard(userName);
+
+  const { wrongBook, count: wrongBookCount, addWrong, recordReviewAnswer, removeFromBook } =
+    useWrongBook(userName, leaderboardData, isOnline, refetchLeaderboard);
+  const [debugInfo, setDebugInfo] = useState({ error: null });
+
+  const pendingQueueRef = useRef([]);
+  const [pendingSubmitCount, setPendingSubmitCount] = useState(0);
+
+  useImagePreload(questions, currentIndex, CONFIG.PRELOAD_AHEAD);
+
+  // 🆕 [C1 修復] 把 pendingSubmitCount 暴露給版本檢查系統
+  useEffect(() => {
+    window.__APP_PENDING_SUBMITS__ = pendingSubmitCount;
+  }, [pendingSubmitCount]);
+
+  const { tabSwitchCount, recordAnswerTime, resetAntiCheat, getCheatReport } =
+    useAntiCheat(gameState, currentIndex, isWrongBookMode);
+
+  /* 🆕 memoize 當前使用者，避免多處重複查找 */
+  const currentUser = useMemo(() => findUser(leaderboardData, userName), [leaderboardData, userName]);
+
+  /* ============================================================
+   * 🆕 限時任務 (speedrun) 邏輯 — 必須放喺所有 state 宣告之後！
+   * ============================================================ */
+
+  const isSpeedrun = !!(activeAssignment && activeAssignment.taskType === 'speedrun');
+  const speedrunTargetCorrect = isSpeedrun ? Number(activeAssignment.targetCorrect || 0) : 0;
+  const speedrunTimeLimitMs   = isSpeedrun ? Number(activeAssignment.timeLimitMin || 0) * 60000 : 0;
 
   // 即時計算當前正確題數（給限時任務用）
   const currentCorrectCount = useMemo(
@@ -5519,45 +5580,7 @@ function BiologyFlashcardApp() {
     [results]
   );
 
-  const isSpeedrun = !!(activeAssignment && activeAssignment.taskType === 'speedrun');
-  const speedrunTargetCorrect = isSpeedrun ? Number(activeAssignment.targetCorrect || 0) : 0;
-  const speedrunTimeLimitMs   = isSpeedrun ? Number(activeAssignment.timeLimitMin || 0) * 60000 : 0;
-
-  // 🆕 限時任務倒數 + 自動結束
-  useEffect(() => {
-    if (gameState !== 'playing' || !isSpeedrun) {
-      speedrunEndedRef.current = false;
-      return;
-    }
-
-    speedrunEndedRef.current = false;
-    setSpeedrunRemainingMs(speedrunTimeLimitMs);
-
-    const tick = setInterval(() => {
-      const remaining = speedrunTimeLimitMs - (Date.now() - timerStart);
-      setSpeedrunRemainingMs(Math.max(0, remaining));
-
-      if (remaining <= 0 && !speedrunEndedRef.current) {
-        speedrunEndedRef.current = true;
-        clearInterval(tick);
-        finishSpeedrun(false); // 時間到
-      }
-    }, 250);
-
-    return () => clearInterval(tick);
-  }, [gameState, isSpeedrun, timerStart, speedrunTimeLimitMs]);
-
-  // 達到目標答對數立即結束
-  useEffect(() => {
-    if (gameState !== 'playing' || !isSpeedrun) return;
-    if (speedrunEndedRef.current) return;
-    if (speedrunTargetCorrect > 0 && currentCorrectCount >= speedrunTargetCorrect) {
-      speedrunEndedRef.current = true;
-      finishSpeedrun(true); // 達標
-    }
-  }, [gameState, isSpeedrun, currentCorrectCount, speedrunTargetCorrect]);
-
-  // 限時任務的結算函式
+  // 限時任務的結算函式（先宣告，後面 useEffect 先用得到）
   const finishSpeedrun = useCallback((success) => {
     const timeUsed = Date.now() - timerStart;
     setTimerMs(timeUsed);
@@ -5600,76 +5623,60 @@ function BiologyFlashcardApp() {
   }, [timerStart, results, settings, activeAssignment, userName, isGuest,
       speedrunTargetCorrect, toast, refetchLeaderboard]);
 
-  const { isOnline, justReconnected } = useOnlineStatus();
+  // 限時任務倒數 + 時間到自動結束
+  useEffect(() => {
+    if (gameState !== 'playing' || !isSpeedrun) {
+      speedrunEndedRef.current = false;
+      return;
+    }
 
-  const [lastScope, setLastScope] = useState('');
+    speedrunEndedRef.current = false;
+    setSpeedrunRemainingMs(speedrunTimeLimitMs);
 
-// 🆕 [H2 修復] 記錄最近一次成績上傳完成的時間戳，用於週榜去重
-  const [currentRunSubmittedAt, setCurrentRunSubmittedAt] = useState(null);
+    const tick = setInterval(() => {
+      const remaining = speedrunTimeLimitMs - (Date.now() - timerStart);
+      setSpeedrunRemainingMs(Math.max(0, remaining));
 
-  const [isWrongBookMode, setIsWrongBookMode] = useState(false);
-  const [currentWrongStreak, setCurrentWrongStreak] = useState(0);
-  const wrongBookRemovedRef = useRef(0);
+      if (remaining <= 0 && !speedrunEndedRef.current) {
+        speedrunEndedRef.current = true;
+        clearInterval(tick);
+        finishSpeedrun(false);
+      }
+    }, 250);
 
-  // 🆕 累計答對題目數（錯題本×2）— 以雲端為唯一真實來源
-  const [cumulativeCorrect, setCumulativeCorrect] = useState(0);
+    return () => clearInterval(tick);
+  }, [gameState, isSpeedrun, timerStart, speedrunTimeLimitMs, finishSpeedrun]);
 
-  const [settings, setSettings] = useState({
-    enableCore: true,
-    selectedChapters: [...ALL_CHAPTERS],
-    enableElective: false,
-    selectedElectives: [],
-    count: CONFIG.QUESTIONS_PER_SESSION,
-    showHints: true
-  });
+  // 達到目標答對數立即結束
+  useEffect(() => {
+    if (gameState !== 'playing' || !isSpeedrun) return;
+    if (speedrunEndedRef.current) return;
+    if (speedrunTargetCorrect > 0 && currentCorrectCount >= speedrunTargetCorrect) {
+      speedrunEndedRef.current = true;
+      finishSpeedrun(true);
+    }
+  }, [gameState, isSpeedrun, currentCorrectCount, speedrunTargetCorrect, finishSpeedrun]);
 
-  const [questions, setQuestions]   = useState([]);
-  const [currentIndex, setIndex]    = useState(0);
-  const [results, setResults]       = useState([]);
-  const [timerStart, setTimerStart] = useState(0);
-  const [timerMs, setTimerMs]       = useState(0);
-  const [mySkipCards, setMySkipCards] = useState(0);
+  /* ============================================================
+   * 以下保持原本所有邏輯不變
+   * ============================================================ */
 
-  const { pool: questionPool, error: questionError, reload: reloadQuestions } = useQuestionPool();
-  const { data: leaderboardData, loading: loadingRank, refetch: refetchLeaderboard } = useLeaderboard(userName);
-
-  const { wrongBook, count: wrongBookCount, addWrong, recordReviewAnswer, removeFromBook } =
-    useWrongBook(userName, leaderboardData, isOnline, refetchLeaderboard);
-  const [debugInfo, setDebugInfo] = useState({ error: null });
-
-  const pendingQueueRef = useRef([]);
-  const [pendingSubmitCount, setPendingSubmitCount] = useState(0);
-
-  useImagePreload(questions, currentIndex, CONFIG.PRELOAD_AHEAD);
-   // 🆕 [C1 修復] 把 pendingSubmitCount 暴露給版本檢查系統
-//     讓刷新前可確認沒有待上傳成績
-useEffect(() => {
-  window.__APP_PENDING_SUBMITS__ = pendingSubmitCount;
-}, [pendingSubmitCount]);
-  const { tabSwitchCount, recordAnswerTime, resetAntiCheat, getCheatReport } =
-    useAntiCheat(gameState, currentIndex, isWrongBookMode);
-
-  /* 🆕 memoize 當前使用者，避免多處重複查找 */
-  const currentUser = useMemo(() => findUser(leaderboardData, userName), [leaderboardData, userName]);
   /* 🆕 從 leaderboardData 衍生「待辦任務 / 已交任務」（依目標過濾） */
   const myAssignments = useMemo(() => {
     if (!leaderboardData) return { pending: [], submitted: [], submissionMap: {} };
     const all = leaderboardData.assignments || [];
     const subs = leaderboardData.mySubmissions || [];
 
-    /* 🆕 老師自己看時不過濾；學生則依 targetForm / targetStudents 過濾 */
     const isTeacherViewer = isTeacher(userName);
     const myForm    = getStudentForm(userName);
     const myShortLC = shortenName(userName).toLowerCase();
 
     const targeted = isTeacherViewer ? all : all.filter(a => {
-      // 個別學生：列表中包含我才顯示
       if (a.targetStudents && Array.isArray(a.targetStudents) && a.targetStudents.length > 0) {
         return a.targetStudents.some(t =>
           shortenName(String(t || '')).toLowerCase() === myShortLC
         );
       }
-      // 年級：targetForm 為 4/5/6 時必須匹配；'All' 或無值則所有人都看到
       if (a.targetForm && a.targetForm !== 'All' && String(a.targetForm) !== String(myForm)) {
         return false;
       }
@@ -5687,7 +5694,7 @@ useEffect(() => {
     };
   }, [leaderboardData, userName]);
 
-  // 🆕 從雲端同步累計答對題目數（leaderboardData.cumulativeCorrect）
+  // 從雲端同步累計答對題目數
   useEffect(() => {
     if (!userName || userName === "訪客 (未登入)") {
       setCumulativeCorrect(0);
@@ -5771,7 +5778,6 @@ useEffect(() => {
     let count;
 
     if (assignment) {
-      /* 🆕 任務模式：依 assignment.scope 自行挑題 */
       const tokens = assignment.scope.split('|')
         .flatMap(p => p.split(',').map(s => s.trim().toUpperCase()))
         .filter(Boolean);
@@ -5831,43 +5837,41 @@ useEffect(() => {
   }, [wrongBook, toast]);
 
   const submitGameResult = useCallback(async (finalResults, timeUsed, scopeStr) => {
-  if (isGuest || userName === "訪客 (未登入)") return;
-  if (isWrongBookMode) return;
+    if (isGuest || userName === "訪客 (未登入)") return;
+    if (isWrongBookMode) return;
 
-  const hasDoubleXP = currentUser ? currentUser.doubleXP > 0 : false;
+    const hasDoubleXP = currentUser ? currentUser.doubleXP > 0 : false;
 
-  let correct = 0;
-  for (let i = 0; i < finalResults.length; i++) if (finalResults[i].isCorrect) correct++;
+    let correct = 0;
+    for (let i = 0; i < finalResults.length; i++) if (finalResults[i].isCorrect) correct++;
 
-  const payload = {
-    name: userName,
-    score: correct,
-    total: finalResults.length,
-    time: timeUsed,
-    doubleXPActive: hasDoubleXP,
-    scope: scopeStr
-  };
+    const payload = {
+      name: userName,
+      score: correct,
+      total: finalResults.length,
+      time: timeUsed,
+      doubleXPActive: hasDoubleXP,
+      scope: scopeStr
+    };
 
-  if (!isOnline) {
-    pendingQueueRef.current.push(payload);
-    setPendingSubmitCount(pendingQueueRef.current.length);
-    toast("目前離線中，成績已暫存,網路恢復後會自動上傳！", "info", 5000);
-    return;
-  }
+    if (!isOnline) {
+      pendingQueueRef.current.push(payload);
+      setPendingSubmitCount(pendingQueueRef.current.length);
+      toast("目前離線中，成績已暫存,網路恢復後會自動上傳！", "info", 5000);
+      return;
+    }
 
-  try {
-    await api.submitGame(payload);
-    // 🆕 [H2 修復] 記下這局上傳完成的時間戳
-    //     ResultScreen 會帶這個值給 computeRankings,做精確去重
-    setCurrentRunSubmittedAt(Date.now());
-    setTimeout(refetchLeaderboard, 2000);
-  } catch (e) {
-    console.error("提交失敗:", e);
-    pendingQueueRef.current.push(payload);
-    setPendingSubmitCount(pendingQueueRef.current.length);
-    toast("成績上傳失敗，已加入重試佇列,連線恢復後會自動重送。", "warning", 5000);
-  }
-}, [isGuest, userName, isWrongBookMode, currentUser, isOnline, toast, refetchLeaderboard]);
+    try {
+      await api.submitGame(payload);
+      setCurrentRunSubmittedAt(Date.now());
+      setTimeout(refetchLeaderboard, 2000);
+    } catch (e) {
+      console.error("提交失敗:", e);
+      pendingQueueRef.current.push(payload);
+      setPendingSubmitCount(pendingQueueRef.current.length);
+      toast("成績上傳失敗，已加入重試佇列,連線恢復後會自動重送。", "warning", 5000);
+    }
+  }, [isGuest, userName, isWrongBookMode, currentUser, isOnline, toast, refetchLeaderboard]);
 
   const handleQuestionSubmit = useCallback((isCorrect, selectedOption, selectedOrigIdx) => {
     recordAnswerTime();
@@ -5879,14 +5883,10 @@ useEffect(() => {
     ];
     setResults(newResults);
 
-// 🆕 累計答對題目數（錯題本模式 ×2，標準練習由 submit_game 後端自動 +1）
     if (isCorrect) {
       const increment = isWrongBookMode ? 2 : 1;
-      // 樂觀 UI：本地立即更新，雲端會在下次 refetch 時校正
       setCumulativeCorrect(prev => prev + increment);
 
-      // 錯題本答對時主動呼叫 add_cumulative 同步雲端（×2）
-      // 標準練習答對由 submit_game 後端自動累加，前端不需重複呼叫
       if (isWrongBookMode && userName && userName !== "訪客 (未登入)" && !isGuest) {
         fetch(CONFIG.GOOGLE_SCRIPT_URL, {
           method: 'POST',
@@ -5955,7 +5955,6 @@ useEffect(() => {
           } else {
             submitGameResult(newResults, timeUsed, scopeStr);
 
-            /* 🆕 若這次是任務模式，額外提交一份任務成績 */
             if (activeAssignment) {
               api.submitAssignment({
                 assignmentId: activeAssignment.id,
@@ -6122,7 +6121,6 @@ useEffect(() => {
           </motion.div>
         )}
 
-        {/* 🆕 任務管理（老師專用） */}
         {gameState === 'assignment_admin' && (
           <motion.div key="aadmin" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="w-full flex justify-center">
             {isTeacher(userName) ? (
@@ -6144,7 +6142,6 @@ useEffect(() => {
           </motion.div>
         )}
 
-        {/* 🆕 任務成績單（老師專用） */}
         {gameState === 'assignment_report' && viewingAssignment && (
           <motion.div key="areport" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="w-full flex justify-center">
             <AssignmentReportScreen
@@ -6155,7 +6152,7 @@ useEffect(() => {
           </motion.div>
         )}
 
-{gameState === 'playing' && questions.length > 0 && (
+        {gameState === 'playing' && questions.length > 0 && (
           <motion.div key="playing" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="w-full max-w-2xl landscape:max-w-5xl">
             <FlashCard
               key={questions[currentIndex]?.id || currentIndex}
@@ -6201,7 +6198,6 @@ useEffect(() => {
     </div>
   );
 }
-
 function Root() {
   return (
     <ToastProvider>
