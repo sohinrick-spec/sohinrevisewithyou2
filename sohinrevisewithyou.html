@@ -1017,7 +1017,7 @@ function evictImageCache(url) {
  * 【區塊 3】API SERVICE
  * ============================================================================ */
 
-const api = {
+  const api = {
   async fetchQuestions() {
     const res = await fetch(CONFIG.QUESTION_API_URL);
     return res.json();
@@ -1058,6 +1058,37 @@ const api = {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ action: 'wrongbook_reward', name, coins: 2, xp: 2 })
+    });
+  },
+  /* 🆕 老師派卷相關 API */
+  async createAssignment(payload) {
+    const res = await fetch(CONFIG.GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'create_assignment', ...payload })
+    });
+    return res.json();
+  },
+  async submitAssignment(payload) {
+    return fetch(CONFIG.GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'submit_assignment', ...payload })
+    });
+  },
+  async getAssignmentReport(assignmentId) {
+    const res = await fetch(CONFIG.GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'get_assignment_report', assignmentId })
+    });
+    return res.json();
+  },
+  async toggleAssignment(assignmentId, active) {
+    return fetch(CONFIG.GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'toggle_assignment', assignmentId, active })
     });
   }
 };
@@ -2594,7 +2625,8 @@ function StartScreen({
   onStart, leaderboardData, userName, setUserName,
   isGuest, setIsGuest, onShowShop, onShowLeaderboard,
   onShowStats, onShowTeacherStats,
-  settings, setSettings, mcqCount, questionLoadError, onReloadQuestions
+  settings, setSettings, mcqCount, questionLoadError, onReloadQuestions,
+  myAssignments, onStartAssignment, onShowAssignmentAdmin
 }) {
   const user = useMemo(() => findUser(leaderboardData, userName), [leaderboardData, userName]);
   const levelInfo = getLevelInfo(user?.totalQuestions || 0);
@@ -2692,6 +2724,47 @@ function StartScreen({
             />
           )}
         </div>
+
+        {/* 🆕 待辦任務卡（學生端） */}
+        {userName && userName !== "訪客 (未登入)" && !isTeacherUser &&
+          myAssignments && myAssignments.pending.length > 0 && (
+          <div className="mb-3 p-3 rounded-xl border-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
+            <div className="flex items-center gap-2 mb-2">
+              <i className="fas fa-bullhorn text-amber-600 dark:text-amber-400"></i>
+              <span className="font-bold text-amber-700 dark:text-amber-300">
+                老師派卷
+              </span>
+              <span className="text-xs bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded-full font-bold">
+                {myAssignments.pending.length} 份待完成
+              </span>
+            </div>
+            <div className="space-y-2">
+              {myAssignments.pending.map(a => (
+                <button key={a.id} onClick={() => onStartAssignment(a)}
+                  className="w-full text-left p-3 bg-white dark:bg-gray-800 rounded-lg border border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-all hover:scale-[1.01] flex items-center justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-gray-800 dark:text-gray-100 truncate">{a.title}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      <i className="fas fa-book mr-1"></i>範圍：{a.scope} · {a.questionCount} 題
+                      {a.dueDate && (
+                        <span className="ml-2 text-red-500 dark:text-red-400">
+                          <i className="fas fa-clock mr-0.5"></i>截止 {String(a.dueDate).slice(0, 10)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <i className="fas fa-arrow-right text-amber-500 ml-2"></i>
+                </button>
+              ))}
+            </div>
+            {myAssignments.submitted.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-400">
+                <i className="fas fa-check-circle mr-1"></i>
+                已完成 {myAssignments.submitted.length} 份任務
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="landscape:grid landscape:grid-cols-2 landscape:gap-3">
 
@@ -2840,6 +2913,16 @@ function StartScreen({
               <i className="fas fa-chalkboard-teacher"></i>
               <span>教師儀表板（班級統計）</span>
               <i className="fas fa-user-tie"></i>
+            </button>
+          )}
+
+          {/* 🆕 派卷管理按鈕（老師專用） */}
+          {isTeacherUser && (
+            <button onClick={onShowAssignmentAdmin}
+              className="w-full font-bold py-2.5 px-6 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white shadow-lg transition-all flex items-center justify-center gap-2 text-sm">
+              <i className="fas fa-paper-plane"></i>
+              <span>派卷管理（建立任務 / 查看成績單）</span>
+              <i className="fas fa-clipboard-list"></i>
             </button>
           )}
         </div>
@@ -4188,6 +4271,281 @@ function ShopScreen({ onBack, userName, leaderboardData, fetchLeaderboard, isOnl
   );
 }
 
+/* ============================================================================
+ * 🆕 老師派卷管理畫面
+ * ============================================================================ */
+function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onViewReport, onRefresh }) {
+  const toast = useToast();
+  const [title, setTitle] = useState('本週任務');
+  const [scope, setScope] = useState('Ch.25');
+  const [count, setCount] = useState(20);
+  const [dueDate, setDueDate] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  const assignments = (leaderboardData && leaderboardData.assignments) || [];
+
+  const handleCreate = async () => {
+    if (!title.trim()) return toast('請輸入任務標題', 'warning', 3000);
+    if (!scope.trim()) return toast('請輸入範圍（如 Ch.25 或 Ch.5,Ch.6|E1）', 'warning', 3000);
+    const cnt = Number(count);
+    if (!cnt || cnt < 1 || cnt > 100) return toast('題數必須介於 1-100', 'warning', 3000);
+
+    setCreating(true);
+    try {
+      const result = await api.createAssignment({
+        title: title.trim(),
+        scope: scope.trim(),
+        questionCount: cnt,
+        dueDate,
+        createdBy: currentUserName
+      });
+      if (result.success) {
+        toast('🎉 派卷成功！學生下次登入會看到此任務。', 'success', 4000);
+        setTitle('本週任務');
+        setScope('Ch.25');
+        setCount(20);
+        setDueDate('');
+        onRefresh();
+      } else {
+        toast('派卷失敗：' + (result.error || '未知錯誤'), 'error', 4000);
+      }
+    } catch (e) {
+      console.error(e);
+      toast('派卷失敗，請檢查網路或 Apps Script 部署', 'error', 4000);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleToggle = async (a) => {
+    if (!confirm(`確定要停用任務「${a.title}」嗎？\n停用後學生將看不到此任務。`)) return;
+    try {
+      await api.toggleAssignment(a.id, false);
+      toast('已停用任務', 'info', 2500);
+      onRefresh();
+    } catch (e) {
+      toast('操作失敗', 'error', 3000);
+    }
+  };
+
+  return (
+    <div className="w-full max-w-3xl px-4 pb-10">
+      <div className="glass-panel p-6 rounded-2xl shadow-xl">
+        <div className="flex items-center justify-between mb-4 border-b border-gray-200 dark:border-gray-700 pb-4">
+          <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+            <i className="fas fa-paper-plane text-pink-500"></i>派卷管理
+          </h2>
+          <span className="text-xs bg-pink-100 dark:bg-pink-900/40 text-pink-700 dark:text-pink-300 px-3 py-1 rounded-full font-bold">
+            <i className="fas fa-user-tie mr-1"></i>{shortenName(currentUserName)}
+          </span>
+        </div>
+
+        <div className="mb-6 p-4 bg-pink-50 dark:bg-pink-900/20 rounded-xl border border-pink-200 dark:border-pink-800">
+          <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
+            <i className="fas fa-plus-circle text-pink-500"></i>建立新任務
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">任務標題</label>
+              <input className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 text-sm"
+                placeholder="例：第三週 Ch.25 練習" value={title} onChange={e => setTitle(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">
+                範圍 <span className="text-gray-400">(用 , 分隔多章；用 | 分核心/選修)</span>
+              </label>
+              <input className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 text-sm font-mono"
+                placeholder="Ch.25 或 Ch.5,Ch.6|E1" value={scope} onChange={e => setScope(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">題數</label>
+              <input type="number" min="1" max="100"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 text-sm"
+                value={count} onChange={e => setCount(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-300 block mb-1">截止日期 <span className="text-gray-400">(選填)</span></label>
+              <input type="date"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 text-sm"
+                value={dueDate} onChange={e => setDueDate(e.target.value)} />
+            </div>
+          </div>
+          <button onClick={handleCreate} disabled={creating}
+            className="w-full mt-3 py-2.5 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 disabled:opacity-50 text-white font-bold rounded-lg transition flex items-center justify-center gap-2">
+            {creating ? <><i className="fas fa-spinner fa-spin"></i>建立中...</> : <><i className="fas fa-paper-plane"></i>派發任務</>}
+          </button>
+        </div>
+
+        <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
+          <i className="fas fa-list text-indigo-500"></i>已派發的任務
+          <span className="text-xs bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full">
+            {assignments.length} 份
+          </span>
+        </h3>
+
+        {assignments.length === 0 ? (
+          <div className="text-center py-8 text-gray-400 dark:text-gray-500">
+            <i className="fas fa-inbox text-3xl mb-2"></i>
+            <p className="text-sm">尚未建立任何任務</p>
+          </div>
+        ) : (
+          <div className="space-y-2 mb-4">
+            {assignments.map(a => (
+              <div key={a.id} className="flex items-center justify-between bg-white dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:shadow-md transition">
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-gray-800 dark:text-gray-100 truncate">{a.title}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    <span className="font-mono">{a.scope}</span> · {a.questionCount} 題
+                    {a.dueDate && <span className="ml-2 text-red-500"><i className="fas fa-clock mr-0.5"></i>{String(a.dueDate).slice(0, 10)}</span>}
+                    <span className="ml-2 text-gray-400">建立者：{shortenName(a.createdBy || '—')}</span>
+                  </div>
+                </div>
+                <div className="flex gap-1 flex-shrink-0">
+                  <button onClick={() => onViewReport(a)}
+                    className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded transition">
+                    <i className="fas fa-chart-bar mr-1"></i>成績單
+                  </button>
+                  <button onClick={() => handleToggle(a)} title="停用此任務"
+                    className="px-2 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-red-100 dark:hover:bg-red-900/40 text-gray-500 hover:text-red-500 text-xs rounded transition">
+                    <i className="fas fa-trash"></i>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button onClick={onBack} className="w-full bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-bold py-3 rounded-xl transition-colors">
+          <i className="fas fa-arrow-left mr-2"></i>返回主頁
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * 🆕 任務成績單畫面
+ * ============================================================================ */
+function AssignmentReportScreen({ assignment, onBack, leaderboardData }) {
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.getAssignmentReport(assignment.id)
+      .then(d => setReport(d.submissions || []))
+      .catch(() => setReport([]))
+      .finally(() => setLoading(false));
+  }, [assignment.id]);
+
+  const allStudents = useMemo(() => {
+    const users = (leaderboardData && leaderboardData.users) || [];
+    return users
+      .map(u => String(u[0] || '').trim())
+      .filter(n => n && n !== '訪客 (未登入)' && !isTeacher(n));
+  }, [leaderboardData]);
+
+  if (loading) {
+    return (
+      <div className="w-full max-w-4xl px-4 pb-10">
+        <div className="glass-panel p-10 rounded-2xl shadow-xl text-center">
+          <i className="fas fa-spinner fa-spin text-3xl text-indigo-500 mb-3"></i>
+          <p className="text-gray-600 dark:text-gray-300">成績單載入中...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const submittedNames = new Set((report || []).map(r => shortenName(r.studentName).toLowerCase()));
+  const notSubmitted = allStudents.filter(n => !submittedNames.has(shortenName(n).toLowerCase()));
+
+  const sorted = (report || []).slice().sort((a, b) => b.accuracy - a.accuracy);
+  const avgAcc = sorted.length > 0 ? sorted.reduce((s, r) => s + r.accuracy, 0) / sorted.length : 0;
+  const avgTime = sorted.length > 0 ? sorted.reduce((s, r) => s + r.timeMs, 0) / sorted.length : 0;
+  const submittedRate = allStudents.length > 0 ? Math.round(sorted.length / allStudents.length * 100) : 0;
+
+  return (
+    <div className="w-full max-w-4xl px-4 pb-10">
+      <div className="glass-panel p-6 rounded-2xl shadow-xl">
+        <div className="mb-4 border-b border-gray-200 dark:border-gray-700 pb-4">
+          <h2 className="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2 flex-wrap">
+            <i className="fas fa-clipboard-check text-indigo-500"></i>{assignment.title}
+            <span className="text-sm font-normal text-gray-500 dark:text-gray-400">· 全班成績單</span>
+          </h2>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <span className="font-mono">{assignment.scope}</span> · {assignment.questionCount} 題
+            {assignment.dueDate && <span className="ml-2">· 截止 {String(assignment.dueDate).slice(0, 10)}</span>}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <KPICard icon="✅" label="已交人數" value={`${sorted.length}/${allStudents.length}`} sub={`繳交率 ${submittedRate}%`} color={submittedRate >= 80 ? 'green' : submittedRate >= 50 ? 'orange' : 'red'} />
+          <KPICard icon="🎯" label="平均正確率" value={`${avgAcc.toFixed(1)}%`} color={avgAcc >= 75 ? 'green' : avgAcc >= 60 ? 'orange' : 'red'} />
+          <KPICard icon="⏱️" label="平均用時" value={formatTime(avgTime)} color="blue" />
+          <KPICard icon="❌" label="未交人數" value={notSubmitted.length} color={notSubmitted.length === 0 ? 'green' : 'red'} />
+        </div>
+
+        {sorted.length === 0 ? (
+          <div className="text-center py-8 bg-gray-50 dark:bg-gray-800/50 rounded-xl mb-4">
+            <i className="fas fa-inbox text-3xl text-gray-400 mb-2"></i>
+            <p className="text-gray-500 dark:text-gray-400 text-sm">尚未有學生提交</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto custom-scrollbar mb-6">
+            <table className="w-full text-sm min-w-[520px]">
+              <thead>
+                <tr className="text-gray-500 dark:text-gray-400 border-b-2 border-gray-200 dark:border-gray-700 text-xs">
+                  <th className="text-left py-2 px-2 w-10">#</th>
+                  <th className="text-left py-2 px-2">學生</th>
+                  <th className="text-right py-2 px-2">分數</th>
+                  <th className="text-right py-2 px-2">正確率</th>
+                  <th className="text-right py-2 px-2">用時</th>
+                  <th className="text-right py-2 px-2">提交時間</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((r, i) => (
+                  <tr key={i} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                    <td className="py-2 px-2 font-bold text-gray-400">{i + 1}</td>
+                    <td className="py-2 px-2 font-medium text-gray-800 dark:text-gray-100">{shortenName(r.studentName)}</td>
+                    <td className="py-2 px-2 text-right font-mono">{r.score}/{r.total}</td>
+                    <td className={`py-2 px-2 text-right font-bold ${r.accuracy >= 80 ? 'text-green-600 dark:text-green-400' : r.accuracy >= 60 ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`}>
+                      {r.accuracy}%
+                    </td>
+                    <td className="py-2 px-2 text-right text-gray-600 dark:text-gray-300">{formatTime(r.timeMs)}</td>
+                    <td className="py-2 px-2 text-right text-[11px] text-gray-500">
+                      {r.submittedAt ? new Date(r.submittedAt).toLocaleString('zh-HK', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {notSubmitted.length > 0 && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 mb-4">
+            <div className="font-bold text-red-700 dark:text-red-300 mb-2 text-sm flex items-center gap-1">
+              <i className="fas fa-exclamation-circle"></i>尚未繳交（{notSubmitted.length} 人）
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {notSubmitted.map((n, i) => (
+                <span key={i} className="text-xs bg-white dark:bg-red-900/40 text-red-700 dark:text-red-300 px-2 py-0.5 rounded border border-red-200 dark:border-red-800">
+                  {shortenName(n)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={onBack} className="w-full bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-bold py-3 rounded-xl transition-colors">
+          <i className="fas fa-arrow-left mr-2"></i>返回派卷管理
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function resolveOptions(q) {
   if (!q) return [];
   if (Array.isArray(q.options) && q.options.length > 0) return q.options;
@@ -4587,19 +4945,16 @@ function ResultScreen({ results, onRestart, totalTime, leaderboardData, userName
  * ============================================================================ */
 
 function BiologyFlashcardApp() {
+  
   const toast = useToast();
   const [gameState, setGameState] = useState('start');
   const [userName, setUserName]   = usePersistedUser();
   const [isGuest, setIsGuest]     = useState(false);
   const [isDark, setIsDark]       = useDarkMode();
 
-  useEffect(() => {
-    window.__APP_STATE__.gameState = gameState;
-    if (gameState !== 'playing') {
-      window.dispatchEvent(new CustomEvent('app-state-changed'));
-    }
-  }, [gameState]);
- 
+  /* 🆕 派卷功能：當前正在做的任務、查看中的成績單 */
+  const [activeAssignment, setActiveAssignment] = useState(null);
+  const [viewingAssignment, setViewingAssignment] = useState(null);
 
   const { isOnline, justReconnected } = useOnlineStatus();
 
@@ -4649,6 +5004,20 @@ useEffect(() => {
 
   /* 🆕 memoize 當前使用者，避免多處重複查找 */
   const currentUser = useMemo(() => findUser(leaderboardData, userName), [leaderboardData, userName]);
+  /* 🆕 從 leaderboardData 衍生「待辦任務 / 已交任務」 */
+  const myAssignments = useMemo(() => {
+    if (!leaderboardData) return { pending: [], submitted: [], submissionMap: {} };
+    const all = leaderboardData.assignments || [];
+    const subs = leaderboardData.mySubmissions || [];
+    const submittedIds = new Set(subs.map(s => s.assignmentId));
+    const submissionMap = {};
+    for (let i = 0; i < subs.length; i++) submissionMap[subs[i].assignmentId] = subs[i];
+    return {
+      pending: all.filter(a => !submittedIds.has(a.id)),
+      submitted: all.filter(a => submittedIds.has(a.id)),
+      submissionMap
+    };
+  }, [leaderboardData]);
 
   useEffect(() => {
     if (!isWrongBookMode) return;
@@ -4714,16 +5083,38 @@ useEffect(() => {
     return out;
   }, [questionPool, settings]);
 
-  const startSession = useCallback(() => {
+  const startSession = useCallback((assignment = null) => {
     if (!questionPool || questionPool.length === 0) {
       return toast("題庫是空的或還在載入！請稍等或檢查網路連線。", "warning", 4000);
     }
-    const filtered = filterPool();
-    if (filtered.length === 0) {
-      return toast("沒有符合條件的題目！請嘗試選擇更多章節。", "warning", 4000);
+
+    let selected;
+    let count;
+
+    if (assignment) {
+      /* 🆕 任務模式：依 assignment.scope 自行挑題 */
+      const tokens = assignment.scope.split('|')
+        .flatMap(p => p.split(',').map(s => s.trim().toUpperCase()))
+        .filter(Boolean);
+      const filtered = questionPool.filter(q => {
+        const cat = (q.category || '').toUpperCase();
+        return tokens.some(tok => cat.indexOf(tok) >= 0);
+      });
+      if (filtered.length === 0) {
+        return toast(`找不到符合範圍「${assignment.scope}」的題目！請聯絡老師。`, "warning", 4000);
+      }
+      count = Math.min(assignment.questionCount || 20, filtered.length);
+      selected = shuffleArray(filtered).slice(0, count);
+      setActiveAssignment(assignment);
+    } else {
+      const filtered = filterPool();
+      if (filtered.length === 0) {
+        return toast("沒有符合條件的題目！請嘗試選擇更多章節。", "warning", 4000);
+      }
+      count = Math.min(settings.count, filtered.length);
+      selected = shuffleArray(filtered).slice(0, count);
+      setActiveAssignment(null);
     }
-    const count = Math.min(settings.count, filtered.length);
-    const selected = shuffleArray(filtered).slice(0, count);
 
     setQuestions(selected);
     setIndex(0);
@@ -4863,12 +5254,29 @@ useEffect(() => {
             console.warn('[Anti-Cheat] 異常成績被擋:', report);
           } else {
             submitGameResult(newResults, timeUsed, scopeStr);
+
+            /* 🆕 若這次是任務模式，額外提交一份任務成績 */
+            if (activeAssignment) {
+              api.submitAssignment({
+                assignmentId: activeAssignment.id,
+                studentName: userName,
+                score: correctCnt,
+                total: newResults.length,
+                timeMs: timeUsed
+              }).then(() => {
+                toast(`✅ 已提交任務「${activeAssignment.title}」`, "success", 3000);
+                setTimeout(refetchLeaderboard, 1500);
+              }).catch(err => {
+                console.error('提交任務失敗:', err);
+                toast('任務成績提交失敗，請檢查網路', 'error', 4000);
+              });
+            }
           }
         }
         setGameState('result');
       }, 500);
     }
-  }, [recordAnswerTime, questions, currentIndex, results, isWrongBookMode, recordReviewAnswer, toast, userName, isGuest, refetchLeaderboard, addWrong, timerStart, settings, getCheatReport, submitGameResult]);
+  }, [recordAnswerTime, questions, currentIndex, results, isWrongBookMode, recordReviewAnswer, toast, userName, isGuest, refetchLeaderboard, addWrong, timerStart, settings, getCheatReport, submitGameResult, activeAssignment]);
 
   const handleUseSkipCard = useCallback(() => {
     if (mySkipCards <= 0) return toast("你的跳題卡不足！請先去商城購買喔。", "warning", 3000);
@@ -4928,7 +5336,7 @@ useEffect(() => {
         {gameState === 'start' && (
           <motion.div key="start" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="w-full flex justify-center">
             <StartScreen
-              onStart={startSession}
+              onStart={() => startSession()}
               leaderboardData={leaderboardData}
               userName={userName} setUserName={setUserName}
               isGuest={isGuest} setIsGuest={setIsGuest}
@@ -4936,10 +5344,13 @@ useEffect(() => {
               onShowLeaderboard={() => setGameState('leaderboard')}
               onShowStats={() => setGameState('stats')}
               onShowTeacherStats={() => setGameState('teacher_stats')}
+              onShowAssignmentAdmin={() => setGameState('assignment_admin')}
               settings={settings} setSettings={setSettings}
               mcqCount={questionPool.length}
               questionLoadError={questionError}
               onReloadQuestions={reloadQuestions}
+              myAssignments={myAssignments}
+              onStartAssignment={(a) => startSession(a)}
             />
           </motion.div>
         )}
@@ -5006,6 +5417,39 @@ useEffect(() => {
               leaderboardData={leaderboardData}
               fetchLeaderboard={refetchLeaderboard}
               isOnline={isOnline}
+            />
+          </motion.div>
+        )}
+
+        {/* 🆕 派卷管理（老師專用） */}
+        {gameState === 'assignment_admin' && (
+          <motion.div key="aadmin" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="w-full flex justify-center">
+            {isTeacher(userName) ? (
+              <AssignmentAdminScreen
+                onBack={() => setGameState('start')}
+                leaderboardData={leaderboardData}
+                currentUserName={userName}
+                onViewReport={(a) => { setViewingAssignment(a); setGameState('assignment_report'); }}
+                onRefresh={refetchLeaderboard}
+              />
+            ) : (
+              <div className="glass-panel p-8 rounded-2xl shadow-xl text-center max-w-md">
+                <i className="fas fa-lock text-4xl text-red-500 mb-4"></i>
+                <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-2">權限不足</h2>
+                <p className="text-gray-500 dark:text-gray-400 mb-4">此頁面僅限教師使用。</p>
+                <button onClick={() => setGameState('start')} className="bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded-lg">返回主頁</button>
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {/* 🆕 任務成績單（老師專用） */}
+        {gameState === 'assignment_report' && viewingAssignment && (
+          <motion.div key="areport" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="w-full flex justify-center">
+            <AssignmentReportScreen
+              assignment={viewingAssignment}
+              onBack={() => setGameState('assignment_admin')}
+              leaderboardData={leaderboardData}
             />
           </motion.div>
         )}
