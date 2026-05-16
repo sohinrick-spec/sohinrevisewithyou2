@@ -1101,6 +1101,14 @@ function evictImageCache(url) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ action: 'toggle_assignment', assignmentId, active })
     });
+  },
+  async updateAssignment(payload) {
+    const res = await fetch(CONFIG.GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'update_assignment', ...payload })
+    });
+    return res.json();
   }
 };
 
@@ -4389,6 +4397,9 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
     () => (leaderboardData && leaderboardData.assignments) || []
   );
 
+  /* 🆕 編輯模式：null = 建立新任務；object = 正在編輯現有任務 */
+  const [editingAssignment, setEditingAssignment] = useState(null);
+
   /* 當雲端資料更新時同步本地狀態 */
   useEffect(() => {
     if (leaderboardData && leaderboardData.assignments) {
@@ -4577,6 +4588,97 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
     }
   };
 
+  /* 🆕 點擊「編輯」：把該任務資料填入表單 */
+  const handleEdit = (a) => {
+    setEditingAssignment(a);
+    setTitle(a.title || '');
+    setCount(a.questionCount || 20);
+    setDueDate(a.dueDate ? String(a.dueDate).slice(0, 10) : '');
+    setRecurrence(a.recurrence || 'none');
+    setRecurrenceEndDate(a.recurrenceEndDate ? String(a.recurrenceEndDate).slice(0, 10) : '');
+    setTaskType(a.taskType || 'standard');
+    setTimeLimitMin(a.timeLimitMin || 10);
+    setTargetCorrect(a.targetCorrect || 15);
+
+    // 解析 scope → 章節 + 選修
+    const scopeParts = (a.scope || '').split('|');
+    const chapters = (scopeParts[0] || '')
+      .split(',').map(c => parseInt(c.replace('Ch.', ''), 10)).filter(n => !isNaN(n));
+    const electives = (scopeParts[1] || '').split(',').filter(Boolean);
+    setEnableCore(chapters.length > 0);
+    setSelectedChapters(chapters.length > 0 ? chapters : [25]);
+    setEnableElective(electives.length > 0);
+    setSelectedElectives(electives);
+
+    // 解析 targetType
+    if (a.targetStudents && Array.isArray(a.targetStudents) && a.targetStudents.length > 0) {
+      setTargetType('Individual'); setSelectedStudents(a.targetStudents);
+    } else if (a.targetForm === '4') { setTargetType('F4'); setSelectedStudents([]); }
+    else if (a.targetForm === '5') { setTargetType('F5'); setSelectedStudents([]); }
+    else if (a.targetForm === '6') { setTargetType('F6'); setSelectedStudents([]); }
+    else { setTargetType('All'); setSelectedStudents([]); }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  /* 🆕 取消編輯：重置表單回預設 */
+  const cancelEdit = () => {
+    setEditingAssignment(null);
+    setTitle('本週任務'); setCount(20); setDueDate('');
+    setTargetType('All'); setSelectedStudents([]);
+    setRecurrence('none'); setRecurrenceEndDate('');
+    setTaskType('standard'); setTimeLimitMin(10); setTargetCorrect(15);
+    setSelectedChapters([25]); setSelectedElectives([]);
+    setEnableCore(true); setEnableElective(false);
+  };
+
+  /* 🆕 更新現有任務 */
+  const handleUpdate = async () => {
+    if (!title.trim()) return toast('請輸入任務標題', 'warning', 3000);
+    const scopeStr = buildScope();
+    if (!scopeStr) return toast('請至少選擇一個章節或選修單元', 'warning', 3000);
+    const cnt = Number(count);
+    if (!cnt || cnt < 1 || cnt > 100) return toast('題數必須介於 1-100', 'warning', 3000);
+    if (targetType === 'Individual' && selectedStudents.length === 0)
+      return toast('請至少選擇一位學生', 'warning', 3000);
+
+    let targetForm = 'All', targetStudentList = [];
+    if (targetType === 'F4') targetForm = '4';
+    else if (targetType === 'F5') targetForm = '5';
+    else if (targetType === 'F6') targetForm = '6';
+    else if (targetType === 'Individual') targetStudentList = selectedStudents;
+
+    setCreating(true);
+    try {
+      const result = await api.updateAssignment({
+        assignmentId: editingAssignment.id,
+        title: title.trim(), scope: scopeStr, questionCount: cnt,
+        dueDate, targetForm, targetStudents: targetStudentList,
+        recurrence, recurrenceEndDate, taskType,
+        timeLimitMin: taskType === 'speedrun' ? Number(timeLimitMin) : null,
+        targetCorrect: taskType === 'speedrun' ? Number(targetCorrect) : null
+      });
+      if (result.success) {
+        toast('✅ 任務已更新！', 'success', 3000);
+        setLocalAssignments(prev => prev.map(x =>
+          x.id === editingAssignment.id
+            ? { ...x, title: title.trim(), scope: scopeStr, questionCount: cnt,
+                dueDate, targetForm, targetStudents: targetStudentList }
+            : x
+        ));
+        cancelEdit();
+        setTimeout(() => onRefresh(), 1800);
+      } else {
+        toast('更新失敗：' + (result.error || '未知錯誤'), 'error', 4000);
+      }
+    } catch (e) {
+      console.error(e);
+      toast('更新失敗，請檢查網路或 Apps Script 部署', 'error', 4000);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-3xl px-4 pb-10">
       <div className="glass-panel p-6 rounded-2xl shadow-xl">
@@ -4590,9 +4692,11 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
           </span>
         </div>
 
-        <div className="mb-6 p-4 bg-pink-50 dark:bg-pink-900/20 rounded-xl border border-pink-200 dark:border-pink-800">
+        <div className={`mb-6 p-4 rounded-xl border ${editingAssignment ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800' : 'bg-pink-50 dark:bg-pink-900/20 border-pink-200 dark:border-pink-800'}`}>
           <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
-            <i className="fas fa-plus-circle text-pink-500"></i>建立新任務
+            {editingAssignment
+              ? <><i className="fas fa-edit text-blue-500"></i>編輯任務：{editingAssignment.title}</>
+              : <><i className="fas fa-plus-circle text-pink-500"></i>建立新任務</>}
           </h3>
 
           {/* 任務標題 / 題數 / 截止日 */}
@@ -4887,10 +4991,22 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
             </div>
           </div>
 
-          <button onClick={handleCreate} disabled={creating}
-            className="w-full mt-2 py-2.5 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 disabled:opacity-50 text-white font-bold rounded-lg transition flex items-center justify-center gap-2">
-            {creating ? <><i className="fas fa-spinner fa-spin"></i>建立中...</> : <><i className="fas fa-paper-plane"></i>派發任務</>}
-          </button>
+          <div className="flex gap-2 mt-2">
+            {editingAssignment && (
+              <button onClick={cancelEdit} disabled={creating}
+                className="flex-1 py-2.5 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-bold rounded-lg transition flex items-center justify-center gap-2">
+                <i className="fas fa-times"></i>取消編輯
+              </button>
+            )}
+            <button onClick={editingAssignment ? handleUpdate : handleCreate} disabled={creating}
+              className={`flex-1 py-2.5 disabled:opacity-50 text-white font-bold rounded-lg transition flex items-center justify-center gap-2 ${editingAssignment ? 'bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600' : 'bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600'}`}>
+              {creating
+                ? <><i className="fas fa-spinner fa-spin"></i>{editingAssignment ? '更新中...' : '建立中...'}</>
+                : editingAssignment
+                  ? <><i className="fas fa-save"></i>儲存更新</>
+                  : <><i className="fas fa-paper-plane"></i>派發任務</>}
+            </button>
+          </div>
         </div>
 
         <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
@@ -4942,6 +5058,10 @@ function AssignmentAdminScreen({ onBack, leaderboardData, currentUserName, onVie
                     <button onClick={() => onViewReport(a)}
                       className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold rounded transition">
                       <i className="fas fa-chart-bar mr-1"></i>成績單
+                    </button>
+                    <button onClick={() => handleEdit(a)} title="編輯此任務"
+                      className="px-2 py-1.5 bg-blue-100 dark:bg-blue-900/40 hover:bg-blue-200 dark:hover:bg-blue-800 text-blue-600 dark:text-blue-300 text-xs rounded transition">
+                      <i className="fas fa-edit"></i>
                     </button>
                     <button onClick={() => handleToggle(a)} title="停用此任務"
                       className="px-2 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-red-100 dark:hover:bg-red-900/40 text-gray-500 hover:text-red-500 text-xs rounded transition">
