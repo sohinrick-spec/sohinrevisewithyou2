@@ -5381,8 +5381,48 @@ const ReviewItem = memo(function ReviewItem({ idx, res, isExpanded, onToggle }) 
   const isRight = res.isCorrect;
   const isLongAnswer = res.isLongAnswer === true;
 
-  const cIdx = isLongAnswer ? null : resolveCorrectIndex(qData.correctIndex);
-  const resolvedOptions = isLongAnswer ? [] : resolveOptions(qData);
+  // 長答題走獨立顯示路徑
+  if (isLongAnswer) {
+    return (
+      <div className={`${isRight ? 'bg-green-50/30 dark:bg-green-900/10' : 'bg-red-50/30 dark:bg-red-900/10'}`}>
+        <button onClick={onToggle} className="w-full p-4 flex items-start gap-3 hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-left">
+          <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold mt-0.5 flex-shrink-0 ${
+            isRight ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400' : 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400'}`}>
+            {idx + 1}
+          </span>
+          <div className="flex-1 overflow-hidden min-w-0">
+            <p className="text-gray-800 dark:text-gray-100 font-medium pr-2 break-words whitespace-pre-line">
+              {formatText(qData ? (qData.question || qData.title) : '長答題')}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-xs text-teal-600 dark:text-teal-400 font-bold">長答題</span>
+            <i className={`fas ${isRight ? 'fa-check-circle text-green-500 dark:text-green-400' : 'fa-times-circle text-red-500 dark:text-red-400'} text-lg`}></i>
+            <i className={`fas fa-chevron-down text-gray-400 dark:text-gray-500 text-sm transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}></i>
+          </div>
+        </button>
+        <AnimatePresence initial={false}>
+          {isExpanded && (
+            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }} className="overflow-hidden">
+              <div className="px-4 pb-4 text-sm grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                <div className={`p-3 rounded-lg border ${isRight ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/30 text-green-800 dark:text-green-300' : 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-300'}`}>
+                  <span className="text-xs opacity-70 block mb-1">你的答案:</span>
+                  <span className="font-medium whitespace-pre-line break-words">{res.userAnswer || res.answer || '（未作答）'}</span>
+                </div>
+                <div className="p-3 rounded-lg border border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-800 dark:text-indigo-300">
+                  <span className="text-xs opacity-70 block mb-1">標準答案:</span>
+                  <span className="font-medium whitespace-pre-line break-words">{qData ? (qData.model_answer || '（無標準答案）') : '（無標準答案）'}</span>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  const cIdx = resolveCorrectIndex(qData.correctIndex);
+  const resolvedOptions = resolveOptions(qData);
 
   // 🆕 預設提示改為更明確的訊息，方便診斷
   let correctAnsRawText = "⚠️ 題目資料殘缺，無法顯示正確答案";
