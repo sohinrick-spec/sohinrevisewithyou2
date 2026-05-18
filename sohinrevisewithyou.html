@@ -3333,6 +3333,7 @@ function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL, use
     try {
       const res = await fetch(GAS_URL, {
         method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           action: 'evaluate_long_answer',
           question: data.question || data.title || '',
