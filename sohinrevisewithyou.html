@@ -3343,15 +3343,12 @@ function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL, use
       });
       const json = await res.json();
       if (json.result === 'error') {
-        setEvalResult({ correct: false, score: 0, feedback: json.message || 'AI 評核失敗，請重試' });
-        onSubmit(false, answer.trim(), 0);
+        setEvalResult({ correct: false, score: 0, feedback: json.message || 'AI 評核失敗，請重試', pendingSubmit: { isCorrect: false, text: answer.trim(), score: 0 } });
       } else {
-        setEvalResult(json);
-        onSubmit(!!json.correct, answer.trim(), json.score || 0);
+        setEvalResult({ ...json, pendingSubmit: { isCorrect: !!json.correct, text: answer.trim(), score: json.score || 0 } });
       }
     } catch(e) {
-      setEvalResult({ correct: false, score: 0, feedback: '網絡錯誤，請重試' });
-      onSubmit(false, answer.trim(), 0);
+      setEvalResult({ correct: false, score: 0, feedback: '網絡錯誤，請重試', pendingSubmit: { isCorrect: false, text: answer.trim(), score: 0 } });
     } finally {
       setIsEvaluating(false);
     }
@@ -3384,10 +3381,17 @@ function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL, use
       ) : (
         <div className={`mt-3 p-3 rounded-xl border-2 text-sm ${evalResult.correct ? 'bg-green-50 dark:bg-green-900/30 border-green-300' : 'bg-red-50 dark:bg-red-900/30 border-red-300'}`}>
           <div className="font-bold mb-1 flex items-center gap-2">
-            {evalResult.correct ? <><i className="fas fa-circle-check text-green-500"></i><span className="text-green-700 dark:text-green-300">正確！得分：{evalResult.score}</span></> : <><i className="fas fa-circle-xmark text-red-500"></i><span className="text-red-700 dark:text-red-300">未完全正確（得分：{evalResult.score}）</span></>}
+             {evalResult.correct ? <><i className="fas fa-circle-check text-green-500"></i><span className="text-green-700 dark:text-green-300">正確！得分：{evalResult.score}</span></> : <><i className="fas fa-circle-xmark text-red-500"></i><span className="text-red-700 dark:text-red-300">未完全正確（得分：{evalResult.score}）</span></>}
           </div>
           <p className="text-gray-600 dark:text-gray-300 mb-2">{evalResult.feedback}</p>
-          <div className="text-gray-500 dark:text-gray-400 text-xs"><b>標準答案：</b>{data.model_answer}</div>
+          <div className="text-gray-500 dark:text-gray-400 text-xs mb-3"><b>標準答案：</b>{data.model_answer}</div>
+          {evalResult.pendingSubmit && (
+            <button
+              onClick={() => { const p = evalResult.pendingSubmit; onSubmit(p.isCorrect, p.text, p.score); }}
+              className="w-full py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold flex items-center justify-center gap-2">
+              <i className="fas fa-arrow-right"></i> 下一題
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -5381,6 +5385,7 @@ const ReviewItem = memo(function ReviewItem({ idx, res, isExpanded, onToggle }) 
   const isRight = res.isCorrect;
   const isLongAnswer = res.isLongAnswer === true;
 
+
   // 長答題走獨立顯示路徑
   if (isLongAnswer) {
     return (
@@ -5438,18 +5443,6 @@ const ReviewItem = memo(function ReviewItem({ idx, res, isExpanded, onToggle }) 
   } else if (cIdx !== null && resolvedOptions.length > 0) {
     correctAnsRawText = `${String.fromCharCode(65 + cIdx)}. 圖片選項`;
     correctAnsImg = qData[`opt_${cIdx}_img`];
-  } else {
-    // 🆕 開發環境下印出診斷訊息
-    if (typeof console !== 'undefined') {
-      console.warn('[ReviewItem] 題目資料殘缺:', {
-        hasCorrectIndex: 'correctIndex' in qData,
-        correctIndex: qData.correctIndex,
-        hasAnswer: 'answer' in qData,
-        answer: qData.answer,
-        optionsCount: resolvedOptions.length,
-        allKeys: Object.keys(qData)
-      });
-    }
   }
 
   let userOptText = res.userAnswer || "";
