@@ -3331,21 +3331,33 @@ function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL, use
     if (!answer.trim()) return;
     setIsEvaluating(true);
     try {
-      const res = await fetch(GAS_URL, {
+      const prompt = `你是一位香港中學生物科老師，請評核學生的長答題答案。
+題目：${data.question || data.title || ''}
+標準答案：${data.model_answer || ''}
+學生答案：${answer.trim()}
+
+請根據學生答案與標準答案的吻合程度評分（0-10分），並給予簡短中文反饋。
+只能回覆以下格式的JSON，不要加任何其他文字：
+{"correct": true/false, "score": 數字, "feedback": "反饋文字"}
+correct為true代表得分>=6分。`;
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'evaluate_long_answer',
-          question: data.question || data.title || '',
-          modelAnswer: data.model_answer || '',
-          studentAnswer: answer.trim(),
-          name: userName || ''
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          messages: [{ role: 'user', content: prompt }]
         })
       });
-      const json = await res.json();
+      const data2 = await res.json();
+      const text = (data2.content || []).map(i => i.text || '').join('');
+      const clean = text.replace(/```json|```/g, '').trim();
+      const json = JSON.parse(clean);
       setEvalResult(json);
       onSubmit(!!json.correct, answer.trim(), json.score || 0);
     } catch(e) {
-      setEvalResult({ correct: false, score: 0, feedback: '網絡錯誤，請重試' });
+      setEvalResult({ correct: false, score: 0, feedback: '評核失敗，請重試' });
       onSubmit(false, answer.trim(), 0);
     } finally {
       setIsEvaluating(false);
@@ -5374,9 +5386,10 @@ function isQuestionComplete(q) {
 const ReviewItem = memo(function ReviewItem({ idx, res, isExpanded, onToggle }) {
   const qData = res.detail;
   const isRight = res.isCorrect;
+  const isLongAnswer = res.isLongAnswer === true;
 
-  const cIdx = resolveCorrectIndex(qData.correctIndex);
-  const resolvedOptions = resolveOptions(qData);
+  const cIdx = isLongAnswer ? null : resolveCorrectIndex(qData.correctIndex);
+  const resolvedOptions = isLongAnswer ? [] : resolveOptions(qData);
 
   // 🆕 預設提示改為更明確的訊息，方便診斷
   let correctAnsRawText = "⚠️ 題目資料殘缺，無法顯示正確答案";
@@ -5457,7 +5470,7 @@ const ReviewItem = memo(function ReviewItem({ idx, res, isExpanded, onToggle }) 
                 <div className={`p-3 rounded-lg border ${isRight
                   ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/30 text-green-800 dark:text-green-300'
                   : 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-300'}`}>
-                  <span className="text-xs opacity-70 block mb-1">你的選擇:</span>
+                  <span className="text-xs opacity-70 block mb-1">{isLongAnswer ? '你的答案:' : '你的選擇:'}</span>
                   <div className="flex flex-col">
                     <span className="font-medium whitespace-pre-line break-words">
                       {formatText(userOptText)}
@@ -6415,7 +6428,7 @@ function BiologyFlashcardApp() {
                   GAS_URL={CONFIG.GOOGLE_SCRIPT_URL}
                   userName={userName}
                   onSubmit={(isCorrect, text, score) => {
-                    const newResults = [...results, { isCorrect, answer: text, score, detail: questions[currentIndex], userAnswer: text }];
+                    const newResults = [...results, { isCorrect, answer: text, score, detail: questions[currentIndex], userAnswer: text, isLongAnswer: true }];
                     setResults(newResults);
                     if (currentIndex + 1 >= questions.length) {
                       setIsLongAnswerMode(false);
