@@ -3317,7 +3317,7 @@ function LeaderboardScreen({ onBack, leaderboardData, userName, loadingRank }) {
   );
 }
 
-function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL }) {
+function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL, userName }) {
   const [answer, setAnswer] = React.useState('');
   const [evalResult, setEvalResult] = React.useState(null);
   const [isEvaluating, setIsEvaluating] = React.useState(false);
@@ -3337,7 +3337,8 @@ function LongAnswerCard({ data, onSubmit, currentIndex, totalCount, GAS_URL }) {
           action: 'evaluate_long_answer',
           question: data.question || data.title || '',
           modelAnswer: data.model_answer || '',
-          studentAnswer: answer.trim()
+          studentAnswer: answer.trim(),
+          name: userName || ''
         })
       });
       const json = await res.json();
@@ -6240,6 +6241,7 @@ function BiologyFlashcardApp() {
   const handleRestart = useCallback(() => {
     setGameState('start');
     setIsWrongBookMode(false);
+    setIsLongAnswerMode(false);
     if (isGuest) { setUserName(""); setIsGuest(false); }
   }, [isGuest, setUserName]);
 
@@ -6410,7 +6412,8 @@ function BiologyFlashcardApp() {
                   data={questions[index]}
                   currentIndex={index}
                   totalCount={questions.length}
-                  GAS_URL={CONFIG.GAS_URL}
+                  GAS_URL={CONFIG.GOOGLE_SCRIPT_URL}
+                  userName={userName}
                   onSubmit={(isCorrect, text, score) => {
                     const newResults = [...results, { isCorrect, answer: text, score }];
                     setResults(newResults);
