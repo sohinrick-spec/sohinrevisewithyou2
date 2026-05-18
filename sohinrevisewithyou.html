@@ -6409,15 +6409,15 @@ function BiologyFlashcardApp() {
           <motion.div key="playing" initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="w-full max-w-2xl landscape:max-w-5xl">
             {isLongAnswerMode ? (
                 <LongAnswerCard
-                  data={questions[index]}
-                  currentIndex={index}
+                  data={questions[currentIndex]}
+                  currentIndex={currentIndex}
                   totalCount={questions.length}
                   GAS_URL={CONFIG.GOOGLE_SCRIPT_URL}
                   userName={userName}
                   onSubmit={(isCorrect, text, score) => {
                     const newResults = [...results, { isCorrect, answer: text, score }];
                     setResults(newResults);
-                    if (index + 1 >= questions.length) {
+                    if (currentIndex + 1 >= questions.length) {
                       setIsLongAnswerMode(false);
                       setGameState('result');
                     } else {
